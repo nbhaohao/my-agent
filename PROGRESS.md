@@ -31,12 +31,12 @@
 | Skill 两层加载 | s07 | `test_s07_skills.py` | ✅ 已装进（11/11 绿） |
 | 上下文压缩（四层管线） | s08 | `test_s08_compact.py` | ✅ 已装进（19/19 绿） |
 | Memory（文件仓库+索引+按需） | s09 | `test_s09_memory.py` | 🔴 进行中 |
-| System Prompt 运行时组装 | s10 | 待加 | ⬜ |
-| 错误恢复 / fallback | s11 | 待加 | ⬜ |
-| 任务系统（依赖图 + 持久化） | s12 | 待加 | ⬜ |
-| 后台任务 | s13 | 待加 | ⬜ |
-| Cron 调度 | s14 | 待加 | ⬜ |
-| Agent Teams | s15 | 待加 | ⬜ |
+| System Prompt 运行时组装 | s10 | `test_s10_system_prompt.py` | 🟡 测试就绪·待做 |
+| 错误恢复 / fallback | s11 | `test_s11_error_recovery.py` | 🟡 测试就绪·待做 |
+| 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 🟡 测试就绪·待做 |
+| 后台任务 | s13 | `test_s13_background_tasks.py` | 🟡 测试就绪·待做 |
+| Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 🟡 测试就绪·待做 |
+| Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 🟡 测试就绪·待做 |
 | Team Protocols | s16 | 待加 | ⬜ |
 | 自主认领 | s17 | 待加 | ⬜ |
 | Worktree 隔离 | s18 | 待加 | ⬜ |
@@ -51,3 +51,6 @@
 并把 `remember` 注册进 `TOOL_HANDLERS`。
 
 ✅ s08 已完成：Context Compact 四层压缩，`test_s08_compact.py` 19/19 全绿。
+
+📦 **s10–s15 已预生成**（测试 + learn-web 教学内容都就绪，全是红的）：按顺序一章一章做绿即可，
+无需再消耗对话额度生成。每章测试都 0 API、确定性。s16–s20 仍待生成。
