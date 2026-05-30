@@ -19,8 +19,10 @@ my-agent — 我自己的 coding agent。
 
 import os
 import pathlib
+import random
 import re
 import subprocess
+import time
 from pathlib import Path
 
 try:
@@ -584,6 +586,66 @@ def run_remember(
 
 
 # ═══════════════════════════════════════════════════════════
+#  Error Recovery（s11）—— 重试 / 退避 / reactive 压缩
+# ═══════════════════════════════════════════════════════════
+
+
+def retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """计算重试延迟。retry_after 非空直接返回；否则指数退避 +
+    随机抖动：base = min(500*2^attempt, 32000)/1000，加 [0, base*0.25]。"""
+    if retry_after is not None:
+        return float(retry_after)
+    base = min(500 * (2**attempt), 32000) / 1000.0
+    return base + random.uniform(0, base * 0.25)
+
+
+def is_retryable_error(e: Exception) -> bool:
+    """str(e) 含 429 / 529 / overloaded / rate_limit 之一 → 可重试。"""
+    s = str(e).lower()
+    return any(kw in s for kw in ("429", "529", "overloaded", "rate_limit"))
+
+
+def is_prompt_too_long_error(e: Exception) -> bool:
+    """str(e) 含 prompt_too_long / 'prompt is too long' / 413 之一 → 上下文超长。"""
+    s = str(e).lower()
+    return any(kw in s for kw in ("prompt_too_long", "prompt is too long", "413"))
+
+
+def with_retry(fn, max_retries: int = 10, sleep=time.sleep):
+    """执行 fn()；抛可重试错误 → sleep + 重试；超次数 → 抛出最后异常。"""
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if not is_retryable_error(e) or attempt >= max_retries:
+                raise
+            delay = retry_delay(attempt)
+            sleep(delay)
+    raise last_exc  # 理论上不会到这里
+
+
+def reactive_compact(messages: list, summarizer=None, keep_recent: int = 5) -> list:
+    """紧急压缩：保留最后 keep_recent 条 + 一条摘要消息。
+    summarizer 可注入（callable(messages)->str）。比 s08 的 compact_history 更激进。"""
+    if len(messages) <= keep_recent:
+        return messages
+    if summarizer is None:
+        # 默认走 s08 的 LLM 摘要
+        summary = compact_history(messages[:-keep_recent])
+    else:
+        result = summarizer(messages[:-keep_recent])
+        if isinstance(result, str):
+            summary = [{"role": "user", "content": result}]
+        elif isinstance(result, list):
+            summary = result
+        else:
+            summary = [{"role": "user", "content": str(result)}]
+    return summary + messages[-keep_recent:]
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具注册表（s02 dispatch map）
 #  ⬇️ s07 起，新机制的工具往这里加
 # ═══════════════════════════════════════════════════════════
@@ -940,8 +1002,14 @@ def agent_loop(messages: list):
 
         system = assemble_system_prompt(context)
 
-        response = get_client().messages.create(
-            model=MODEL, system=system, messages=messages, tools=TOOLS, max_tokens=8000
+        response = with_retry(
+            lambda: get_client().messages.create(
+                model=MODEL,
+                system=system,
+                messages=messages,
+                tools=TOOLS,
+                max_tokens=8000,
+            )
         )
         messages.append({"role": "assistant", "content": response.content})
 

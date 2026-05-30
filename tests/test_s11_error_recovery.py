@@ -46,6 +46,85 @@ def check(name, cond, detail=""):
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
 
 
+# ── 集成块用的假 client ──────────────────────────────────────
+class _Block:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+class _Resp:
+    def __init__(self):
+        self.stop_reason, self.content = "end_turn", [_Block("done")]
+
+class FakeClient:
+    """第一次 create 抛 429，第二次成功——验证 agent_loop 真的重试了。"""
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise Exception("429 rate_limit hit")
+        return _Resp()
+
+
+def integration_checks(agent):
+    """── 集成：agent_loop 碰到 429 时走了 with_retry（而不是直接崩） ──
+    用假 client 让第一次 create 抛 429，断言 loop 最终成功完成（靠 with_retry 重试）。
+    同时传 no-op sleep 避免真实等待。0 API。"""
+    import tempfile
+    needed = ("agent_loop", "get_client", "HOOKS", "with_retry")
+    if not all(hasattr(agent, a) for a in needed):
+        check("集成：agent 具备所需符号", False, f"缺: {[a for a in needed if not hasattr(agent, a)]}")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+    }
+    fake = FakeClient()
+    completed = {"ok": False}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = Path(td)
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+
+            # 注入 no-op sleep，防止真实退避等待
+            orig_sleep = None
+            import time
+            orig_sleep = time.sleep
+            time.sleep = lambda s: None
+
+            try:
+                agent.agent_loop([{"role": "user", "content": "hi"}])
+                completed["ok"] = True
+            except Exception as e:
+                completed["err"] = str(e)
+            finally:
+                if orig_sleep:
+                    time.sleep = orig_sleep
+
+        check("集成：agent_loop 碰到 429 后重试成功完成（with_retry 接进 loop）",
+              completed["ok"],
+              completed.get("err", "loop 抛出了异常，with_retry 可能没接进 agent_loop"))
+        check("集成：fake client 被调用了至少 2 次（第 1 次 429 + 第 2 次成功）",
+              fake.calls >= 2, f"calls={fake.calls}")
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.rounds_since_todo = saved["rounds"]
+
+
 def main():
     try:
         import agent
@@ -104,6 +183,9 @@ def main():
     check("reactive_compact：压到 <= keep_recent+1", len(rc) <= 6, f"len={len(rc)}")
     check("reactive_compact：含摘要", any("FAKE_SUM" in str(x.get("content", "")) for x in rc))
     check("reactive_compact：保留了最近的 m29", any("m29" == x.get("content") for x in rc))
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 
