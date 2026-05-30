@@ -70,6 +70,95 @@ def check(name, cond, detail=""):
     print(f"{mark} {name}" + (f"  — {detail}" if detail and not cond else ""))
 
 
+# ── 集成测试用的假 client：拦 messages.create、记录请求、0 API ──
+class _Block:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _Resp:
+    def __init__(self):
+        self.stop_reason = "end_turn"
+        self.content = [_Block("done")]
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = []
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Resp()
+
+
+def _serialize(call: dict) -> str:
+    return str(call.get("system", "")) + " " + str(call.get("messages", ""))
+
+
+def integration_checks(agent):
+    """── 集成：agent_loop 真把记忆两层接通了吗 ──
+    单元测试只证函数本身对；这里用假 client 证 agent_loop 调用时：
+    ① system 用了 build_system 的记忆索引 ② 相关记忆 body 被注入本轮请求。0 API。"""
+    if not all(hasattr(agent, a) for a in ("HOOKS", "get_client", "agent_loop")):
+        check("集成：agent 具备 HOOKS/get_client/agent_loop", False, "缺接线所需符号")
+        return
+
+    MARKER_DESC = "ZZINTEGDESC"   # 进索引（description）
+    MARKER_BODY = "ZZINTEGBODY"   # 只在 body，注入了才会出现在请求里
+
+    saved_hooks = {k: list(v) for k, v in agent.HOOKS.items()}
+    saved_get_client = agent.get_client
+    saved_mem_dir = agent.MEMORY_DIR
+    saved_rounds = getattr(agent, "rounds_since_todo", 0)
+    fake = FakeClient()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []          # 清钩子，避免 Stop 钩子干扰单轮收尾
+            agent.MEMORY_DIR = tmp
+            agent.get_client = lambda: fake  # agent_loop 里的 get_client() 取到它
+            agent.rounds_since_todo = 0
+
+            agent.write_memory_file(
+                "缩进偏好", "user",
+                f"{MARKER_DESC} 用户缩进偏好",
+                f"{MARKER_BODY} 永远用 tab，不用空格。",
+                memory_dir=tmp,
+            )
+            agent.rebuild_memory_index(memory_dir=tmp)
+
+            messages = [{"role": "user", "content": f"{MARKER_DESC} 我的缩进偏好是什么？"}]
+            agent.agent_loop(messages)
+
+            # 带 tools 的那次才是主 loop 请求（select 的内部 LLM 调用不带 tools）
+            loop_calls = [c for c in fake.calls if "tools" in c]
+            check("集成：agent_loop 向模型发了带 tools 的请求", len(loop_calls) >= 1,
+                  f"calls={len(fake.calls)}")
+            if loop_calls:
+                call = loop_calls[0]
+                check("集成·索引层：system 含记忆索引（用了 build_system，非静态 SYSTEM）",
+                      MARKER_DESC in str(call.get("system", "")),
+                      "agent_loop 可能还在用静态 SYSTEM")
+                check("集成·正文层：相关记忆 body 被注入本轮请求",
+                      MARKER_BODY in _serialize(call),
+                      "select+注入 body 没接进 loop")
+            else:
+                check("集成·索引层：system 含记忆索引", False, "无主 loop 请求可查")
+                check("集成·正文层：body 被注入", False, "无主 loop 请求可查")
+    finally:
+        for k, v in saved_hooks.items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved_get_client
+        agent.MEMORY_DIR = saved_mem_dir
+        agent.rounds_since_todo = saved_rounds
+
+
 def main():
     try:
         import agent
@@ -184,6 +273,9 @@ def main():
     # ── 附加：remember 工具注册 ───────────────────────────────
     handlers = getattr(agent, "TOOL_HANDLERS", {})
     check("TOOL_HANDLERS 注册了 'remember'", "remember" in handlers)
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 

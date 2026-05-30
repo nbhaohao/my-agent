@@ -19,6 +19,7 @@ my-agent — 我自己的 coding agent。
 
 import os
 import pathlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -40,6 +41,7 @@ if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
+MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
@@ -48,6 +50,7 @@ SYSTEM = (
     "For complex sub-problems, use the task tool to spawn a subagent. "
     "Before starting any multi-step task, use todo_write to plan."
 )
+
 SUB_SYSTEM = (
     f"You are a coding agent at {WORKDIR}. "
     "Complete the task you were given, then return a concise summary. "
@@ -407,6 +410,177 @@ def run_compact(
 
 
 # ═══════════════════════════════════════════════════════════
+#  Memory 持久记忆层（s09）
+#
+#  设计原则：索引常驻 SYSTEM（便宜、可缓存）+ 正文按需注入
+#
+#  存储结构：.memory/
+#    MEMORY.md          ← 索引（一行一个记忆，name + description）
+#    user-tabs.md        ← 独立记忆文件（YAML frontmatter + body）
+#
+#  流程：
+#    1. build_system() 内联记忆索引（name+description），不内联 body
+#    2. select_relevant_memories() 按需选出相关记忆文件
+#    3. consolidate_memories() 定期去重合并
+# ═══════════════════════════════════════════════════════════
+
+
+def _parse_frontmatter(text: str) -> tuple:
+    """解析 YAML frontmatter，返回 (meta_dict, body_str)。"""
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    meta = {}
+    for line in parts[1].strip().splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip().strip('"').strip("'")
+    return meta, parts[2].strip()
+
+
+def write_memory_file(
+    name: str, mem_type: str, description: str, body: str, memory_dir=None
+) -> Path:
+    """将 name 转 slug 写成 <slug>.md，带 YAML frontmatter，写完重建索引。"""
+    md = Path(memory_dir) if memory_dir else MEMORY_DIR
+    md.mkdir(parents=True, exist_ok=True)
+    slug = name.lower().replace(" ", "-").replace("/", "-")
+    filepath = md / f"{slug}.md"
+    filepath.write_text(
+        f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    rebuild_memory_index(memory_dir=md)
+    return filepath
+
+
+def list_memory_files(memory_dir=None) -> list[dict]:
+    """遍历 *.md（排除 MEMORY.md），解析 frontmatter，
+    返回含 name/description/type/filename 的 dict 列表。"""
+    md = Path(memory_dir) if memory_dir else MEMORY_DIR
+    if not md.is_dir():
+        return []
+    result = []
+    for f in sorted(md.glob("*.md")):
+        if f.name == "MEMORY.md":
+            continue
+        raw = f.read_text(encoding="utf-8")
+        meta, _body = _parse_frontmatter(raw)
+        result.append(
+            {
+                "filename": f.name,
+                "name": meta.get("name", f.stem),
+                "description": meta.get("description", ""),
+                "type": meta.get("type", "user"),
+            }
+        )
+    return result
+
+
+def rebuild_memory_index(memory_dir=None) -> Path:
+    """写出 MEMORY.md 索引：一行一条，形如 '- [name](slug.md) — description'。"""
+    md = Path(memory_dir) if memory_dir else MEMORY_DIR
+    md.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for f in sorted(md.glob("*.md")):
+        if f.name == "MEMORY.md":
+            continue
+        raw = f.read_text(encoding="utf-8")
+        meta, body = _parse_frontmatter(raw)
+        name = meta.get("name", f.stem)
+        desc = meta.get("description", body.split("\n")[0][:80] if body else "")
+        lines.append(f"- [{name}]({f.name}) — {desc}")
+    idx_path = md / "MEMORY.md"
+    idx_path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+    return idx_path
+
+
+def select_relevant_memories(
+    messages: list, max_items: int = 5, selector=None, memory_dir=None
+) -> list[str]:
+    """选出相关记忆的 filename 列表，最多 max_items 条。
+
+    selector 是 callable(catalog:str, recent:str) -> list[int]，默认走 LLM。
+    为 None 或抛异常时降级为关键词匹配 name+description。
+    """
+    md = Path(memory_dir) if memory_dir else MEMORY_DIR
+    files = list_memory_files(memory_dir=md)
+    if not files:
+        return []
+
+    # 收集最近用户消息文本
+    recent_texts = []
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(b.get("text", ""))
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if isinstance(content, str):
+                recent_texts.append(content)
+            if len(recent_texts) >= 3:
+                break
+    recent = " ".join(reversed(recent_texts))[:2000]
+
+    # 构建 catalog 字符串
+    catalog_lines = []
+    for i, f in enumerate(files):
+        catalog_lines.append(f"{i}: {f['name']} — {f['description']}")
+    catalog = "\n".join(catalog_lines)
+
+    indices = []
+    if selector is not None:
+        try:
+            indices = selector(catalog, recent)
+        except Exception:
+            indices = []
+
+    # selector 为 None 或返回空 / 抛异常 → 关键词兜底
+    if not indices:
+        keywords = [w.lower() for w in recent.split() if len(w) > 2]
+        for i, f in enumerate(files):
+            text = (f["name"] + " " + f["description"]).lower()
+            if any(kw in text for kw in keywords):
+                indices.append(i)
+
+    # 按索引取 filename，截断到 max_items
+    selected = []
+    for idx in indices:
+        if isinstance(idx, int) and 0 <= idx < len(files):
+            selected.append(files[idx]["filename"])
+            if len(selected) >= max_items:
+                break
+    return selected
+
+
+def consolidate_memories(
+    memory_dir=None, threshold: int = 10, consolidator=None
+) -> bool:
+    """记忆文件数 < threshold 时直接返回 False，不调 consolidator。
+    达到阈值才调 consolidator 去重合并。"""
+    md = Path(memory_dir) if memory_dir else MEMORY_DIR
+    files = list_memory_files(memory_dir=md)
+    if len(files) < threshold:
+        return False
+    if consolidator is not None:
+        consolidator(files)
+    return True
+
+
+def run_remember(
+    name: str, mem_type: str = "user", description: str = "", body: str = ""
+) -> str:
+    """remember 工具 handler：写入一条持久记忆。"""
+    path = write_memory_file(name, mem_type, description, body)
+    return f"Remembered '{name}' → {path.name}"
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具注册表（s02 dispatch map）
 #  ⬇️ s07 起，新机制的工具往这里加
 # ═══════════════════════════════════════════════════════════
@@ -520,6 +694,33 @@ TOOLS = [
             "required": ["messages"],
         },
     },
+    {
+        "name": "remember",
+        "description": "Persist a memory (preference, fact, or feedback) for future sessions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short name for the memory (e.g. 'User Tabs').",
+                },
+                "mem_type": {
+                    "type": "string",
+                    "enum": ["user", "feedback", "project", "reference"],
+                    "description": "Memory type. Default 'user'.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line description for index lookup.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Full detail in markdown.",
+                },
+            },
+            "required": ["name", "description", "body"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -531,6 +732,7 @@ TOOL_HANDLERS = {
     "todo_write": run_todo_write,
     "task": spawn_subagent,
     "compact": run_compact,
+    "remember": run_remember,
 }
 
 
@@ -643,14 +845,35 @@ def load_skill(name: str) -> str:
 
 
 def build_system() -> str:
-    """Build full system prompt with skill catalog (name+description only)."""
+    """Build full system prompt with skill catalog + memory index (name+description only)."""
     base = SYSTEM
+    index_path = MEMORY_DIR / "MEMORY.md"
+    if index_path.exists():
+        mem_text = index_path.read_text(encoding="utf-8").strip()
+        if mem_text:
+            base += "\n\n## Memory Index\n" + mem_text
     if not SKILL_REGISTRY:
         return base
     catalog_lines = ["\n## Available Skills"]
     for name, info in SKILL_REGISTRY.items():
         catalog_lines.append(f"- **{name}**: {info['description']}")
     return base + "\n" + "\n".join(catalog_lines)
+
+
+def _load_relevant_memories(messages: list) -> str:
+    """选出相关记忆，读取文件正文，返回注入用的文本块。"""
+    selected = select_relevant_memories(messages)
+    if not selected:
+        return ""
+    parts = []
+    for filename in selected:
+        path = MEMORY_DIR / filename
+        if path.exists():
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\n\n".join(parts) if parts else ""
+
+
+CONTEXT_LIMIT = 50_000  # s08: 超过这个体量才触发 L4（LLM 摘要）压缩
 
 
 def agent_loop(messages: list):
@@ -662,8 +885,23 @@ def agent_loop(messages: list):
             )
             rounds_since_todo = 0
 
+        # s08: 上下文压缩管线（原地改 messages）。便宜的三层每轮跑（短对话时是 no-op）；
+        # 只有体量超过 CONTEXT_LIMIT 才动用 L4 的 LLM 摘要。
+        messages[:] = tool_result_budget(messages)
+        messages[:] = snip_compact(messages)
+        messages[:] = micro_compact(messages)
+        if len(str(messages)) > CONTEXT_LIMIT:
+            print("\033[33m[auto compact]\033[0m")
+            messages[:] = compact_history(messages)
+
+        # s09: 索引层（build_system）+ 正文按需注入层
+        system = build_system()
+        mem_bodies = _load_relevant_memories(messages)
+        if mem_bodies:
+            system = system + "\n\n## Relevant Memory Content\n" + mem_bodies
+
         response = get_client().messages.create(
-            model=MODEL, system=SYSTEM, messages=messages, tools=TOOLS, max_tokens=8000
+            model=MODEL, system=system, messages=messages, tools=TOOLS, max_tokens=8000
         )
         messages.append({"role": "assistant", "content": response.content})
 
