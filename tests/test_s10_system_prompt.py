@@ -38,6 +38,82 @@ def check(name, cond, detail=""):
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
 
 
+# ── 集成块用的假 client：拦 messages.create、记录请求、0 API ──
+class _Block:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _Resp:
+    def __init__(self):
+        self.stop_reason, self.content = "end_turn", [_Block("done")]
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = []
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Resp()
+
+
+def integration_checks(agent):
+    """── 集成：agent_loop 组装 system 时真走了 assemble_system_prompt 吗 ──
+    单元块只证 assemble_system_prompt 本身对；这里用假 client 证 agent_loop 调用时
+    确实经它装配 system（而非硬编码字符串）。0 API。"""
+    import tempfile
+    if not all(hasattr(agent, a) for a in ("agent_loop", "get_client", "HOOKS", "assemble_system_prompt")):
+        check("集成：agent 具备 agent_loop/assemble_system_prompt 等符号", False, "缺接线所需符号")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+        "assemble": agent.assemble_system_prompt,
+    }
+    fake = FakeClient()
+    spy = {"n": 0}
+    orig_assemble = agent.assemble_system_prompt
+
+    def spy_assemble(context):
+        spy["n"] += 1
+        return orig_assemble(context)
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = Path(td)           # 空记忆目录，不干扰
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+            agent.assemble_system_prompt = spy_assemble   # 装 spy
+
+            agent.agent_loop([{"role": "user", "content": "hi"}])
+
+            check("集成：agent_loop 经 assemble_system_prompt 装配 system", spy["n"] >= 1,
+                  "agent_loop 可能还在用硬编码 SYSTEM / 没让 build_system 改调 assemble")
+            loop_calls = [c for c in fake.calls if "tools" in c]
+            if loop_calls and hasattr(agent, "PROMPT_SECTIONS"):
+                system_text = str(loop_calls[0].get("system", ""))
+                ident = agent.PROMPT_SECTIONS.get("identity", "")
+                check("集成：送给模型的 system 含 identity 段", bool(ident) and ident in system_text,
+                      "装配结果没进 agent_loop 的请求")
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.rounds_since_todo = saved["rounds"]
+        agent.assemble_system_prompt = saved["assemble"]
+
+
 def main():
     try:
         import agent
@@ -68,6 +144,9 @@ def main():
     # 有技能：按需追加
     withskill = agent.assemble_system_prompt({"skills": "ZZ_SKILL_ZZ hello: 打招呼"})
     check("有 skills：把技能目录拼进来", "ZZ_SKILL_ZZ" in withskill)
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 

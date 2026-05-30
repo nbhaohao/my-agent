@@ -45,11 +45,14 @@ MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
-SYSTEM = (
-    f"You are a coding agent at {WORKDIR}. "
-    "For complex sub-problems, use the task tool to spawn a subagent. "
-    "Before starting any multi-step task, use todo_write to plan."
-)
+PROMPT_SECTIONS = {
+    "identity": "You are a coding agent.",
+    "tools": (
+        "For complex sub-problems, use the task tool to spawn a subagent. "
+        "Before starting any multi-step task, use todo_write to plan."
+    ),
+    "workspace": f"Working directory: {WORKDIR}",
+}
 
 SUB_SYSTEM = (
     f"You are a coding agent at {WORKDIR}. "
@@ -844,20 +847,43 @@ def load_skill(name: str) -> str:
     return parts[2].strip()
 
 
+def assemble_system_prompt(context: dict) -> str:
+    """按 context 运行时组装 system prompt。
+
+    必选段（始终拼接）：identity / tools / workspace
+    可选段（按真实状态）：
+      - context["memories"] 非空 → 追加记忆内容
+      - context["skills"] 非空 → 追加技能目录
+    identity 永远在最前。
+    """
+    sections = [
+        PROMPT_SECTIONS["identity"],
+        PROMPT_SECTIONS["tools"],
+        PROMPT_SECTIONS["workspace"],
+    ]
+    memories = context.get("memories", "")
+    if memories:
+        sections.append(memories)
+    skills = context.get("skills", "")
+    if skills:
+        sections.append(skills)
+    return "\n\n".join(sections)
+
+
 def build_system() -> str:
     """Build full system prompt with skill catalog + memory index (name+description only)."""
-    base = SYSTEM
+    context = {}
     index_path = MEMORY_DIR / "MEMORY.md"
     if index_path.exists():
         mem_text = index_path.read_text(encoding="utf-8").strip()
         if mem_text:
-            base += "\n\n## Memory Index\n" + mem_text
-    if not SKILL_REGISTRY:
-        return base
-    catalog_lines = ["\n## Available Skills"]
-    for name, info in SKILL_REGISTRY.items():
-        catalog_lines.append(f"- **{name}**: {info['description']}")
-    return base + "\n" + "\n".join(catalog_lines)
+            context["memories"] = mem_text
+    if SKILL_REGISTRY:
+        catalog_lines = []
+        for name, info in SKILL_REGISTRY.items():
+            catalog_lines.append(f"- **{name}**: {info['description']}")
+        context["skills"] = "\n".join(catalog_lines)
+    return assemble_system_prompt(context)
 
 
 def _load_relevant_memories(messages: list) -> str:
@@ -894,11 +920,25 @@ def agent_loop(messages: list):
             print("\033[33m[auto compact]\033[0m")
             messages[:] = compact_history(messages)
 
-        # s09: 索引层（build_system）+ 正文按需注入层
-        system = build_system()
+        # s10: 按 context 运行时组装 system prompt（含记忆索引 + 正文 + 技能目录）
+        context = {}
+        idx_path = MEMORY_DIR / "MEMORY.md"
+        if idx_path.exists():
+            idx_text = idx_path.read_text(encoding="utf-8").strip()
+            if idx_text:
+                context["memories"] = idx_text
         mem_bodies = _load_relevant_memories(messages)
         if mem_bodies:
-            system = system + "\n\n## Relevant Memory Content\n" + mem_bodies
+            context["memories"] = (
+                context.get("memories", "") + "\n\n" + mem_bodies
+            ).strip()
+        if SKILL_REGISTRY:
+            catalog_lines = []
+            for name, info in SKILL_REGISTRY.items():
+                catalog_lines.append(f"- **{name}**: {info['description']}")
+            context["skills"] = "\n".join(catalog_lines)
+
+        system = assemble_system_prompt(context)
 
         response = get_client().messages.create(
             model=MODEL, system=system, messages=messages, tools=TOOLS, max_tokens=8000
