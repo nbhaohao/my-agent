@@ -20,7 +20,7 @@
 
 ```sh
 # 在 my-agent 目录下（用本仓库自带 .venv）
-.venv/bin/python tests/test_s08_compact.py
+.venv/bin/python tests/test_s09_memory.py
 ```
 
 ## 机制清单（绿 = 已装进 my-agent）
@@ -29,8 +29,8 @@
 |---|---|---|---|
 | agent loop + 多工具 + 权限 + hooks + todo + subagent | s01-s06 | （已学透，固化为起点） | ✅ 起点 |
 | Skill 两层加载 | s07 | `test_s07_skills.py` | ✅ 已装进（11/11 绿） |
-| 上下文压缩（四层管线） | s08 | `test_s08_compact.py` | 🔴 进行中 |
-| Memory | s09 | 待加 | ⬜ |
+| 上下文压缩（四层管线） | s08 | `test_s08_compact.py` | ✅ 已装进（19/19 绿） |
+| Memory（文件仓库+索引+按需） | s09 | `test_s09_memory.py` | 🔴 进行中 |
 | System Prompt 运行时组装 | s10 | 待加 | ⬜ |
 | 错误恢复 / fallback | s11 | 待加 | ⬜ |
 | 任务系统（依赖图 + 持久化） | s12 | 待加 | ⬜ |
@@ -45,8 +45,9 @@
 
 ## 当前位置
 
-🎯 s08：让 my-agent 的测试 `test_s08_compact.py` 变绿 —— 实现上下文四层压缩管线
-（`snip_compact` / `micro_compact` / `tool_result_budget` / `compact_history`），
-并把 `compact` 注册进 `TOOL_HANDLERS`（s02 三步仪式）。
+🎯 s09：让 my-agent 的测试 `test_s09_memory.py` 变绿 —— 实现跨会话记忆层
+（`write_memory_file` / `list_memory_files` / `rebuild_memory_index` /
+`select_relevant_memories` / `consolidate_memories`），扩展 `build_system` 内联记忆索引，
+并把 `remember` 注册进 `TOOL_HANDLERS`。
 
-✅ s07 已完成：Skill 两层加载，`test_s07_skills.py` 11/11 全绿。
+✅ s08 已完成：Context Compact 四层压缩，`test_s08_compact.py` 19/19 全绿。
