@@ -20,7 +20,7 @@
 
 ```sh
 # 在 my-agent 目录下（用本仓库自带 .venv）
-.venv/bin/python tests/test_s07_skills.py
+.venv/bin/python tests/test_s08_compact.py
 ```
 
 ## 机制清单（绿 = 已装进 my-agent）
@@ -28,8 +28,8 @@
 | 机制 | 来源 | 测试 | 状态 |
 |---|---|---|---|
 | agent loop + 多工具 + 权限 + hooks + todo + subagent | s01-s06 | （已学透，固化为起点） | ✅ 起点 |
-| Skill 两层加载 | s07 | `test_s07_skills.py` | 🔴 进行中 |
-| 上下文压缩 | s08 | 待加 | ⬜ |
+| Skill 两层加载 | s07 | `test_s07_skills.py` | ✅ 已装进（11/11 绿） |
+| 上下文压缩（四层管线） | s08 | `test_s08_compact.py` | 🔴 进行中 |
 | Memory | s09 | 待加 | ⬜ |
 | System Prompt 运行时组装 | s10 | 待加 | ⬜ |
 | 错误恢复 / fallback | s11 | 待加 | ⬜ |
@@ -45,4 +45,8 @@
 
 ## 当前位置
 
-🎯 s07：让 my-agent 的测试 `test_s07_skills.py` 变绿。
+🎯 s08：让 my-agent 的测试 `test_s08_compact.py` 变绿 —— 实现上下文四层压缩管线
+（`snip_compact` / `micro_compact` / `tool_result_budget` / `compact_history`），
+并把 `compact` 注册进 `TOOL_HANDLERS`（s02 三步仪式）。
+
+✅ s07 已完成：Skill 两层加载，`test_s07_skills.py` 11/11 全绿。
