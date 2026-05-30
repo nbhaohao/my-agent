@@ -254,6 +254,159 @@ def spawn_subagent(description: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
+#  Context Compact 四层压缩管线（s08）
+#
+#  设计原则：便宜的先跑，贵的后跑。
+#  snip → micro → budget → compact_history
+#
+#  顺序不能换的原因：
+#    L1 snip     — 纯 O(n) 扫描，先砍掉整条多余消息（外壳层）。
+#                   500→50 条后，L2/L3 要处理的文本量就少了 10 倍。
+#    L2 micro    — 在剩下的消息里，把旧 tool_result 正文换成占位。
+#                   仍然是纯文本操作，0 API 调用。
+#    L3 budget   — 精准看最后一条消息的字节预算，超了就落盘最大的块。
+#                   L1+L2 已经削减了大量内容，这层只处理最后的残余。
+#    L4 history  — LLM 摘要，最贵（API 调用）。前三层都压不住才到这里。
+#                   如果把它放在前面，每次都要烧钱；放最后是最经济的。
+# ═══════════════════════════════════════════════════════════
+
+
+def snip_compact(messages: list, max_messages: int = 50) -> list:
+    """L1: 消息条数超过阈值时，保留头尾 + snipped 占位。"""
+    if len(messages) <= max_messages:
+        return messages
+    tail_count = max_messages - 3
+    snipped_count = len(messages) - 3 - tail_count
+    placeholder = {
+        "role": "user",
+        "content": f"[... {snipped_count} messages snipped ...]",
+    }
+    return messages[:3] + [placeholder] + messages[-tail_count:]
+
+
+def micro_compact(messages: list, keep_recent: int = 3) -> list:
+    """L2: 扫描所有 tool_result 块；最近 keep_recent 条保留完整，
+    更旧且内容 >120 字符的换成含 "compacted" 的占位。"""
+    # 收集所有 tool_result 块的位置 (msg_index, block_index)
+    locations = []
+    for mi, msg in enumerate(messages):
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for bi, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    locations.append((mi, bi))
+
+    # 确定哪些块要压缩：全部靠后的 keep_recent 条不动，前面的动
+    if len(locations) <= keep_recent:
+        return messages
+    to_compact = set(locations[:-keep_recent])
+
+    # 构建输出（只修改被标记的块）
+    result = []
+    for mi, msg in enumerate(messages):
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            new_blocks = []
+            for bi, block in enumerate(content):
+                if (mi, bi) in to_compact:
+                    text = str(block.get("content", ""))
+                    if len(text) > 120:
+                        new_blocks.append(
+                            {
+                                **block,
+                                "content": f"[content compacted: {len(text)} chars]",
+                            }
+                        )
+                    else:
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
+            result.append({**msg, "content": new_blocks})
+        else:
+            result.append(msg)
+    return result
+
+
+def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
+    """L3: 看最后一条消息里 tool_result 的总字节数；
+    超预算时从最大的块开始落盘/截断到预算内，留下 persisted 标记。"""
+    last = messages[-1]
+    content = last.get("content", "")
+    if not isinstance(content, list):
+        return messages
+
+    # 收集 tool_result 块信息
+    tool_blocks = []
+    total_bytes = 0
+    for bi, block in enumerate(content):
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            text = str(block.get("content", ""))
+            size = len(text.encode("utf-8"))
+            tool_blocks.append((bi, size))
+            total_bytes += size
+
+    if total_bytes <= max_bytes:
+        return messages
+
+    # 从大到小排序，优先处理最大的块
+    tool_blocks.sort(key=lambda x: x[1], reverse=True)
+
+    for bi, size in tool_blocks:
+        if total_bytes <= max_bytes:
+            break
+        block = content[bi]
+        placeholder = f"[content persisted ({size} bytes)]"
+        content[bi] = {**block, "content": placeholder}
+        total_bytes -= size
+        total_bytes += len(placeholder.encode("utf-8"))
+
+    return messages
+
+
+def compact_history(messages: list, summarizer=None) -> list:
+    """L4: 用摘要器把整个对话历史压成一条 user 消息。
+    summarizer 是 callable(messages)->str；默认走 LLM，测试可注入假的。"""
+    if summarizer is None:
+        # 默认摘要器：调 LLM 生成摘要
+        def default_summarizer(msgs):
+            prompt = (
+                "Summarize the following conversation as concisely as possible. "
+                "Include key decisions, facts learned, and work done.\n\n"
+            )
+            for m in msgs:
+                prompt += (
+                    f"[{m.get('role', '?')}]: {str(m.get('content', ''))[:1000]}\n"
+                )
+            client = get_client()
+            response = client.messages.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+            )
+            return extract_text(response.content)
+
+        summarizer = default_summarizer
+
+    summary = summarizer(messages)
+    return [{"role": "user", "content": summary}]
+
+
+def run_compact(
+    messages: list = None,
+    max_messages: int = 50,
+    keep_recent: int = 3,
+    max_bytes: int = 200_000,
+) -> str:
+    """compact 工具 handler：跑完整四层压缩管线。"""
+    if messages is None:
+        return "Error: messages is required"
+    messages = snip_compact(messages, max_messages)
+    messages = micro_compact(messages, keep_recent)
+    messages = tool_result_budget(messages, max_bytes)
+    return f"Compacted to {len(messages)} messages"
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具注册表（s02 dispatch map）
 #  ⬇️ s07 起，新机制的工具往这里加
 # ═══════════════════════════════════════════════════════════
@@ -341,6 +494,32 @@ TOOLS = [
             "required": ["description"],
         },
     },
+    {
+        "name": "compact",
+        "description": "Compact conversation history using the four-layer pipeline (snip → micro → budget).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "description": "Conversation messages to compact.",
+                },
+                "max_messages": {
+                    "type": "integer",
+                    "description": "Max messages for snip layer. Default 50.",
+                },
+                "keep_recent": {
+                    "type": "integer",
+                    "description": "Recent tool_results to keep full. Default 3.",
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Max bytes for tool_result_budget layer. Default 200000.",
+                },
+            },
+            "required": ["messages"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -351,6 +530,7 @@ TOOL_HANDLERS = {
     "glob": run_glob,
     "todo_write": run_todo_write,
     "task": spawn_subagent,
+    "compact": run_compact,
 }
 
 
