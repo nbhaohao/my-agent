@@ -27,6 +27,7 @@ s07 验收测试 —— Skill Loading（两层按需加载）
       但要写进你自己的 agent.py，自己理解每一行。
 ══════════════════════════════════════════════════════════════
 """
+
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ sys.path.insert(0, str(AGENT_DIR))
 
 PASS, FAIL = "\033[32m✅\033[0m", "\033[31m❌\033[0m"
 results = []
+
 
 def check(name, cond, detail=""):
     results.append(cond)
@@ -60,7 +62,8 @@ def main():
     check("agent 暴露 load_skill()", has_load)
     check("agent 暴露 build_system()", has_build)
     if not (has_registry and has_scan and has_load and has_build):
-        summarize(); return
+        summarize()
+        return
 
     # 2. 扫描 my-agent/skills/，应找到 hello
     skills_dir = AGENT_DIR / "skills"
@@ -68,35 +71,47 @@ def main():
         agent.scan_skills(skills_dir)
     except TypeError:
         agent.scan_skills()  # 兼容无参实现（依赖默认 skills 目录）
-    check("扫描后 SKILL_REGISTRY 含 'hello'", "hello" in agent.SKILL_REGISTRY,
-          f"registry keys = {list(agent.SKILL_REGISTRY)}")
+    check(
+        "扫描后 SKILL_REGISTRY 含 'hello'",
+        "hello" in agent.SKILL_REGISTRY,
+        f"registry keys = {list(agent.SKILL_REGISTRY)}",
+    )
 
     hello = agent.SKILL_REGISTRY.get("hello", {})
-    check("hello 的 description 被正确解析",
-          "示例技能" in hello.get("description", ""),
-          f"description = {hello.get('description')!r}")
+    check(
+        "hello 的 description 被正确解析",
+        "示例技能" in hello.get("description", ""),
+        f"description = {hello.get('description')!r}",
+    )
 
     # 3. load_skill 返回完整正文（含正文标记），目录层不含正文标记
     body = agent.load_skill("hello")
-    check("load_skill('hello') 返回完整正文",
-          "SKILL_BODY_MARKER_42" in body)
-    check("load_skill 对未知技能优雅处理",
-          ("not found" in agent.load_skill("nope").lower()
-           or "未找到" in agent.load_skill("nope")))
+    check("load_skill('hello') 返回完整正文", "SKILL_BODY_MARKER_42" in body)
+    check(
+        "load_skill 对未知技能优雅处理",
+        (
+            "not found" in agent.load_skill("nope").lower()
+            or "未找到" in agent.load_skill("nope")
+        ),
+    )
 
     # 4. build_system 内联目录（name+desc），但不内联正文 → 这就是「便宜」的意义
     sys_prompt = agent.build_system()
     check("build_system() 内联了 skill 名 'hello'", "hello" in sys_prompt)
     check("build_system() 内联了 description", "示例技能" in sys_prompt)
-    check("build_system() 没把正文塞进 SYSTEM（保持便宜）",
-          "SKILL_BODY_MARKER_42" not in sys_prompt)
+    check(
+        "build_system() 没把正文塞进 SYSTEM（保持便宜）",
+        "SKILL_BODY_MARKER_42" not in sys_prompt,
+    )
 
     summarize()
 
 
 def summarize():
     total, ok = len(results), sum(results)
-    print(f"\n{ok}/{total} 通过", "🎉 全绿，今天达标！" if ok == total and total else "")
+    print(
+        f"\n{ok}/{total} 通过", "🎉 全绿，今天达标！" if ok == total and total else ""
+    )
     sys.exit(0 if ok == total and total else 1)
 
 
