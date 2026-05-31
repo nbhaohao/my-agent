@@ -51,6 +51,7 @@ WORKDIR = Path.cwd()
 MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 TASKS_DIR = Path(".tasks")
 MAILBOX_DIR = Path(".mailbox")
+pending_requests: dict = {}  # request_id -> ProtocolState
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
@@ -929,7 +930,12 @@ class MessageBus:
         self.mailbox_dir.mkdir(parents=True, exist_ok=True)
 
     def send(
-        self, from_agent: str, to_agent: str, content: str, msg_type: str = "message"
+        self,
+        from_agent: str,
+        to_agent: str,
+        content: str,
+        msg_type: str = "message",
+        metadata=None,
     ):
         """往收件人文件 append 一行 JSON。"""
         msg = {
@@ -937,6 +943,7 @@ class MessageBus:
             "to": to_agent,
             "content": content,
             "type": msg_type,
+            "metadata": metadata or {},
         }
         path = self.mailbox_dir / f"{to_agent}.jsonl"
         with path.open("a", encoding="utf-8") as f:
@@ -950,6 +957,99 @@ class MessageBus:
         lines = path.read_text(encoding="utf-8").strip().splitlines()
         path.unlink()
         return [json.loads(line) for line in lines if line.strip()]
+
+
+# ═══════════════════════════════════════════════════════════
+#  Team Protocols —— 团队协议（shutdown / plan_approval）
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class ProtocolState:
+    request_id: str
+    type: str  # "shutdown" | "plan_approval"
+    sender: str
+    target: str
+    status: str  # "pending" | "approved" | "rejected"
+    payload: str = ""
+    created_at: float = field(default_factory=time.time)
+
+
+def new_request_id() -> str:
+    """返回形如 req_xxxxxx 的唯一字符串。"""
+    return "req_" + uuid.uuid4().hex[:6]
+
+
+def match_response(response_type: str, request_id: str, approve: bool) -> None:
+    """匹配协议响应：校验类型、状态，更新 approve/reject。"""
+    state = pending_requests.get(request_id)
+    if state is None:
+        return  # 不知道这个 request
+    # 类型匹配校验
+    if state.type == "shutdown" and response_type != "shutdown_response":
+        return
+    if state.type == "plan_approval" and response_type != "plan_approval_response":
+        return
+    # 已非 pending → 幂等，不改
+    if state.status != "pending":
+        return
+    state.status = "approved" if approve else "rejected"
+
+
+def run_request_shutdown(teammate: str, **_) -> str:
+    """向 teammate 发起 shutdown 协议。"""
+    req_id = new_request_id()
+    pending_requests[req_id] = ProtocolState(
+        request_id=req_id,
+        type="shutdown",
+        sender="lead",
+        target=teammate,
+        status="pending",
+        payload="",
+    )
+    MessageBus().send(
+        "lead",
+        teammate,
+        "Please shut down gracefully.",
+        "shutdown_request",
+        {"request_id": req_id},
+    )
+    return f"Shutdown requested from {teammate} (req: {req_id})"
+
+
+def run_request_plan(teammate: str, task: str = "", **_) -> str:
+    """向 teammate 请求提交计划（不走两阶段协议，不发 request_id）。"""
+    MessageBus().send("lead", teammate, f"Please submit a plan for: {task}", "message")
+    return f"Plan requested from {teammate}"
+
+
+def run_review_plan(request_id: str, approve: bool, feedback: str = "", **_) -> str:
+    """审核 plan：改状态，发响应消息。"""
+    state = pending_requests.get(request_id)
+    if state is None or state.status != "pending":
+        return f"Request {request_id} not found or already resolved."
+    state.status = "approved" if approve else "rejected"
+    content = feedback or ("Approved" if approve else "Rejected")
+    MessageBus().send(
+        "lead",
+        state.sender,
+        content,
+        "plan_approval_response",
+        {"request_id": request_id, "approve": approve},
+    )
+    return f"Plan {request_id} {'approved' if approve else 'rejected'}."
+
+
+def consume_lead_inbox(route_protocol: bool = True) -> list[dict]:
+    """读 lead 收件箱，可选路由协议响应到 match_response。"""
+    msgs = MessageBus().read_inbox("lead")
+    if route_protocol:
+        for msg in msgs:
+            mtype = msg.get("type", "")
+            meta = msg.get("metadata", {})
+            if mtype.endswith("_response") and "request_id" in meta:
+                match_response(mtype, meta["request_id"], meta.get("approve", False))
+    return msgs
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1115,6 +1215,11 @@ TOOL_HANDLERS = {
     "complete_task": lambda task_id, **_: complete_task(task_id),
     "send_message": lambda to, content, msg_type="message", **_: (
         MessageBus().send("agent", to, content, msg_type) or f"Message sent to {to}"
+    ),
+    "request_shutdown": lambda teammate, **_: run_request_shutdown(teammate),
+    "request_plan": lambda teammate="", task="", **_: run_request_plan(teammate, task),
+    "review_plan": lambda request_id, approve, feedback="", **_: run_review_plan(
+        request_id, approve, feedback
     ),
 }
 

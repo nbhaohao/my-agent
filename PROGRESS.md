@@ -42,7 +42,7 @@
 | 后台任务 | s13 | `test_s13_background_tasks.py` | 同文件集成块 3（并行不阻塞+结果落 dict）= 17/17 | ✅ 已装进（单元+接线绿） |
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 同文件集成块 2（纯函数无副作用验证）= 15/15 | ✅ 已装进（单元+接线绿） |
 | Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 同文件集成块 2（send_message 落盘）= 11/11 | ✅ 已装进（单元+接线绿） |
-| Team Protocols | s16 | 待加 | 待加 | ⬜ |
+| Team Protocols | s16 | `test_s16_team_protocols.py` | 同文件集成块 3（request_shutdown 落盘 + 登记）= 27/27 | ✅ 已装进（单元+接线绿） |
 | 自主认领 | s17 | 待加 | 待加 | ⬜ |
 | Worktree 隔离 | s18 | 待加 | 待加 | ⬜ |
 | MCP | s19 | 待加 | 待加 | ⬜ |
@@ -52,7 +52,10 @@
 
 ## 当前位置
 
-🎯 下一步：s16「Team Protocols」（待生成测试）。
+🎯 下一步：s17「Autonomous Agents」（待生成测试）。
+
+✅ s16 已完成：Team Protocols —— `test_s16_team_protocols.py` 27/27（24 单元 + 3 集成）。
+   ProtocolState + pending_requests；request_id 关联；match_response 类型校验+幂等；consume_lead_inbox 统一路由。
 
 ✅ s15 已完成：Agent Teams —— `test_s15_agent_teams.py` 11/11（9 单元 + 2 集成）。
    文件收件箱 MessageBus；消费式 read_inbox；send_message 接入 TOOL_HANDLERS。
