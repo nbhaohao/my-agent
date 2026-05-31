@@ -39,6 +39,95 @@ def check(name, cond, detail=""):
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
 
 
+# ── 集成块用的假 client ──────────────────────────────────────
+class _TextBlock:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _ToolUseBlock:
+    def __init__(self, name, input_data):
+        self.type = "tool_use"
+        self.id = "toolu_s15_01"
+        self.name = name
+        self.input = input_data
+
+
+class _Resp:
+    def __init__(self, stop_reason, content):
+        self.stop_reason, self.content = stop_reason, content
+
+
+class FakeClient:
+    """第一轮返回 send_message 工具调用，第二轮 end_turn。
+    验证 send_message handler 接进了 TOOL_HANDLERS，消息文件落盘。"""
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return _Resp("tool_use", [_ToolUseBlock("send_message", {
+                "to": "bob", "content": "集成测试消息", "msg_type": "message"
+            })])
+        return _Resp("end_turn", [_TextBlock("done")])
+
+
+def integration_checks(agent):
+    """── 集成：agent_loop 收到 send_message 调用时消息文件真的落盘 ──
+    FakeClient 第一轮返回 send_message tool_use，断言：
+      1. loop 正常完成
+      2. MAILBOX_DIR 里出现了 bob.jsonl（消息持久化接通）。0 API。"""
+    needed = ("agent_loop", "get_client", "HOOKS", "MAILBOX_DIR", "MessageBus")
+    if not all(hasattr(agent, a) for a in needed):
+        check("集成：agent 具备所需符号", False,
+              f"缺: {[a for a in needed if not hasattr(agent, a)]}")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "mailbox_dir": agent.MAILBOX_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+    }
+    fake = FakeClient()
+    completed = {"ok": False}
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = tmp
+            agent.MAILBOX_DIR = tmp
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+
+            try:
+                agent.agent_loop([{"role": "user", "content": "发一条消息给 bob"}])
+                completed["ok"] = True
+            except Exception as e:
+                completed["err"] = str(e)
+
+            mailbox_files = list(tmp.glob("*.jsonl"))
+            check("集成：agent_loop 收到 send_message 调用后正常完成",
+                  completed["ok"], completed.get("err", ""))
+            check("集成：MAILBOX_DIR 里出现消息文件（持久化接通）",
+                  len(mailbox_files) >= 1, f"jsonl 文件数={len(mailbox_files)}")
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.MAILBOX_DIR = saved["mailbox_dir"]
+        agent.rounds_since_todo = saved["rounds"]
+
+
 def main():
     try:
         import agent
@@ -80,6 +169,9 @@ def main():
 
     handlers = getattr(agent, "TOOL_HANDLERS", {})
     check("TOOL_HANDLERS 注册了 'send_message'", "send_message" in handlers)
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 

@@ -41,7 +41,7 @@
 | 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 同文件集成块 2（create_task 落盘）= 22/22 | ✅ 已装进（单元+接线绿） |
 | 后台任务 | s13 | `test_s13_background_tasks.py` | 同文件集成块 3（并行不阻塞+结果落 dict）= 17/17 | ✅ 已装进（单元+接线绿） |
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 同文件集成块 2（纯函数无副作用验证）= 15/15 | ✅ 已装进（单元+接线绿） |
-| Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 待加集成块 | 🟡 测试就绪·待做 |
+| Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 同文件集成块 2（send_message 落盘）= 11/11 | ✅ 已装进（单元+接线绿） |
 | Team Protocols | s16 | 待加 | 待加 | ⬜ |
 | 自主认领 | s17 | 待加 | 待加 | ⬜ |
 | Worktree 隔离 | s18 | 待加 | 待加 | ⬜ |
@@ -52,7 +52,10 @@
 
 ## 当前位置
 
-🎯 下一步：s15「Agent Teams」。
+🎯 下一步：s16「Team Protocols」（待生成测试）。
+
+✅ s15 已完成：Agent Teams —— `test_s15_agent_teams.py` 11/11（9 单元 + 2 集成）。
+   文件收件箱 MessageBus；消费式 read_inbox；send_message 接入 TOOL_HANDLERS。
 
 ✅ s14 已完成：Cron 调度 —— `test_s14_cron_scheduler.py` 15/15（13 单元 + 2 集成）。
    五段式 cron 匹配；DOM/DOW OR 语义；weekday 换算 (weekday+1)%7。

@@ -50,6 +50,7 @@ if os.getenv("ANTHROPIC_BASE_URL"):
 WORKDIR = Path.cwd()
 MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 TASKS_DIR = Path(".tasks")
+MAILBOX_DIR = Path(".mailbox")
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
@@ -912,6 +913,46 @@ def cron_matches(cron_expr: str, dt: datetime) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════
+#  Message Bus —— 多 agent 消息总线
+# ═══════════════════════════════════════════════════════════
+
+
+class MessageBus:
+    """基于 JSONL 文件的多 agent 消息总线。
+
+    每个收件人一个 {mailbox_dir}/{agent}.jsonl 文件，
+    每行一条 JSON。read_inbox 是消费式读取（读后删除）。
+    """
+
+    def __init__(self, mailbox_dir=None):
+        self.mailbox_dir = Path(mailbox_dir) if mailbox_dir else MAILBOX_DIR
+        self.mailbox_dir.mkdir(parents=True, exist_ok=True)
+
+    def send(
+        self, from_agent: str, to_agent: str, content: str, msg_type: str = "message"
+    ):
+        """往收件人文件 append 一行 JSON。"""
+        msg = {
+            "from": from_agent,
+            "to": to_agent,
+            "content": content,
+            "type": msg_type,
+        }
+        path = self.mailbox_dir / f"{to_agent}.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
+    def read_inbox(self, agent: str) -> list[dict]:
+        """读收件人文件的全部行，读完后删除文件。消费式，避免重复。"""
+        path = self.mailbox_dir / f"{agent}.jsonl"
+        if not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        path.unlink()
+        return [json.loads(line) for line in lines if line.strip()]
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具注册表（s02 dispatch map）
 #  ⬇️ s07 起，新机制的工具往这里加
 # ═══════════════════════════════════════════════════════════
@@ -1072,6 +1113,9 @@ TOOL_HANDLERS = {
     ),
     "claim_task": lambda task_id, owner="agent", **_: claim_task(task_id, owner),
     "complete_task": lambda task_id, **_: complete_task(task_id),
+    "send_message": lambda to, content, msg_type="message", **_: (
+        MessageBus().send("agent", to, content, msg_type) or f"Message sent to {to}"
+    ),
 }
 
 
