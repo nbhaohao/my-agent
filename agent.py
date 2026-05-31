@@ -751,11 +751,15 @@ def can_start(task_id: str, tasks_dir=None) -> bool:
 
 
 def claim_task(task_id: str, owner: str = "agent", tasks_dir=None) -> str:
-    """can_start → False 返回 blocked 提示；True → 设 in_progress + save。"""
+    """检查 status/owner/can_start 三重条件后认领任务。"""
     td = _resolve_tasks_dir(tasks_dir)
+    task = load_task(task_id, tasks_dir=td)
+    if task.status != "pending":
+        return f"Task {task_id} is {task.status}, cannot claim"
+    if task.owner:
+        return f"Task {task_id} already owned by {task.owner}"
     if not can_start(task_id, tasks_dir=td):
         return f"Task {task_id} is blocked by unfinished dependencies."
-    task = load_task(task_id, tasks_dir=td)
     task.status = "in_progress"
     task.owner = owner
     save_task(task, tasks_dir=td)
@@ -769,6 +773,68 @@ def complete_task(task_id: str, tasks_dir=None) -> str:
     task.status = "completed"
     save_task(task, tasks_dir=td)
     return f"Task {task_id} completed."
+
+
+def scan_unclaimed_tasks(tasks_dir=None) -> list:
+    """返回 status==pending、无 owner、依赖已满足的可认领任务列表。"""
+    all_tasks = list_tasks(tasks_dir=tasks_dir)
+    return [
+        t
+        for t in all_tasks
+        if t.status == "pending"
+        and not t.owner
+        and can_start(t.id, tasks_dir=tasks_dir)
+    ]
+
+
+def idle_poll(
+    agent_name: str,
+    messages: list,
+    poll_interval: int = 5,
+    timeout: int = 60,
+    sleep=time.sleep,
+) -> str:
+    """自治轮询：先查收件箱 → 遇 shutdown 退出，遇消息注入并返回；
+    无消息则扫可认领任务 → 有就认领并返回；全无则 sleep 后重试，超时返回 'timeout'。"""
+    for _ in range(timeout // poll_interval):
+        sleep(poll_interval)
+        # ① 查收件箱
+        inbox = MessageBus().read_inbox(agent_name)
+        if inbox:
+            for msg in inbox:
+                if msg.get("type") == "shutdown_request":
+                    req_id = msg.get("metadata", {}).get("request_id", "")
+                    MessageBus().send(
+                        agent_name,
+                        "lead",
+                        "Shutting down gracefully.",
+                        "shutdown_response",
+                        {"request_id": req_id, "approve": True},
+                    )
+                    return "shutdown"
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "<inbox>"
+                    + json.dumps(inbox, ensure_ascii=False)
+                    + "</inbox>",
+                }
+            )
+            return "work"
+        # ② 扫可认领任务
+        unclaimed = scan_unclaimed_tasks()
+        if unclaimed:
+            task = unclaimed[0]
+            result = claim_task(task.id, agent_name)
+            if "claimed" in result.lower():
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"<auto-claimed>{task.id}: {task.subject}</auto-claimed>",
+                    }
+                )
+                return "work"
+    return "timeout"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1220,6 +1286,10 @@ TOOL_HANDLERS = {
     "request_plan": lambda teammate="", task="", **_: run_request_plan(teammate, task),
     "review_plan": lambda request_id, approve, feedback="", **_: run_review_plan(
         request_id, approve, feedback
+    ),
+    "scan_unclaimed_tasks": lambda **_: (
+        "\n".join(f"{t.id} {t.subject}" for t in scan_unclaimed_tasks())
+        or "(看板上没有可认领的任务)"
     ),
 }
 

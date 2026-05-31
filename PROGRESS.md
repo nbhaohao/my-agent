@@ -43,7 +43,7 @@
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 同文件集成块 2（纯函数无副作用验证）= 15/15 | ✅ 已装进（单元+接线绿） |
 | Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 同文件集成块 2（send_message 落盘）= 11/11 | ✅ 已装进（单元+接线绿） |
 | Team Protocols | s16 | `test_s16_team_protocols.py` | 同文件集成块 3（request_shutdown 落盘 + 登记）= 27/27 | ✅ 已装进（单元+接线绿） |
-| 自主认领 | s17 | 待加 | 待加 | ⬜ |
+| 自主认领 | s17 | `test_s17_autonomous_agents.py` | 同文件集成块 5（自治循环 idle_poll 串 scan+claim）= 25/25 | ✅ 已装进（单元+接线绿） |
 | Worktree 隔离 | s18 | 待加 | 待加 | ⬜ |
 | MCP | s19 | 待加 | 待加 | ⬜ |
 | 综合收口 | s20 | 待加 | 待加 | ⬜ |
@@ -52,7 +52,10 @@
 
 ## 当前位置
 
-🎯 下一步：s17「Autonomous Agents」（待生成测试）。
+🎯 下一步：s18「Worktree Isolation」（待生成测试；开工前需定测纯逻辑 vs 引真 git 的取舍）。
+
+✅ s17 已完成：Autonomous Agents —— `test_s17_autonomous_agents.py` 25/25（20 单元 + 5 集成）。
+   scan_unclaimed_tasks 三条件；claim_task 加 owner 检查（向后兼容 s12）；idle_poll 的 WORK→IDLE→SHUTDOWN，inbox 优先于看板。
 
 ✅ s16 已完成：Team Protocols —— `test_s16_team_protocols.py` 27/27（24 单元 + 3 集成）。
    ProtocolState + pending_requests；request_id 关联；match_response 类型校验+幂等；consume_lead_inbox 统一路由。
