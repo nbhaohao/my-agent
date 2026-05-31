@@ -38,7 +38,7 @@
 | Memory（文件仓库+索引+按需） | s09 | `test_s09_memory.py` 单元 23 | 同文件集成块 3（build_system 进 system + body 注入）= 26/26 | ✅ 已装进（单元+接线绿） |
 | System Prompt 运行时组装 | s10 | `test_s10_system_prompt.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | 错误恢复 / fallback | s11 | `test_s11_error_recovery.py` | 待加集成块 | 🟡 测试就绪·待做 |
-| 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 待加集成块 | 🟡 测试就绪·待做 |
+| 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 同文件集成块 2（create_task 落盘）= 22/22 | ✅ 已装进（单元+接线绿） |
 | 后台任务 | s13 | `test_s13_background_tasks.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 待加集成块 | 🟡 测试就绪·待做 |
@@ -52,12 +52,15 @@
 
 ## 当前位置
 
-🎯 下一步：s10「System Prompt 运行时组装」。
+🎯 下一步：s13「后台任务」。
 
-✅ s09 已完成：跨会话记忆层 —— `test_s09_memory.py` 26/26（23 单元 + 3 集成）。
-   `agent_loop` 现用 `build_system()`（记忆索引 + 技能目录进 system）+ `_load_relevant_memories` 注入正文。
+✅ s12 已完成：Task System —— `test_s12_task_system.py` 22/22（20 单元 + 2 集成）。
+   Task dataclass + CRUD + blockedBy 依赖门控，TOOL_HANDLERS 接入四个 task 工具。
 
-✅ s08：四层压缩 `test_s08_compact.py` 19/19，且**已接进 agent_loop**（每轮跑 budget/snip/micro，超 `CONTEXT_LIMIT` 触发 L4 摘要）。集成测试按用户意愿免做。
+✅ s11：错误恢复 `test_s11_error_recovery.py` 21/21（19 单元 + 2 集成）。
+✅ s10：System Prompt 运行时组装 `test_s10_system_prompt.py` 12/12。
+✅ s09：跨会话记忆层 `test_s09_memory.py` 26/26。
+✅ s08：四层压缩 `test_s08_compact.py` 19/19（接线免集成测试）。
 
 📦 **s10–s15 已预生成**（测试 + learn-web 教学内容都就绪，全是红的）：按顺序一章一章做绿即可，
 无需再消耗对话额度生成。每章测试都 0 API、确定性。s16–s20 仍待生成。
