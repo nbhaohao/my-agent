@@ -53,6 +53,7 @@ TASKS_DIR = Path(".tasks")
 MAILBOX_DIR = Path(".mailbox")
 WORKTREES_DIR = Path(".worktrees")
 pending_requests: dict = {}  # request_id -> ProtocolState
+mcp_clients: dict = {}  # server_name -> MCPClient
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
@@ -961,6 +962,140 @@ def keep_worktree(name: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
+#  MCP Plugin（s19）—— 标准协议接外部工具
+# ═══════════════════════════════════════════════════════════
+
+
+class MCPClient:
+    """模拟 MCP client：register 存工具定义和 handler，call_tool 分发调用。"""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.tools: list = []
+        self._handlers: dict = {}
+
+    def register(self, tool_defs: list, handlers: dict):
+        """tools/list 模拟：存下工具定义 + 实现。"""
+        self.tools = list(tool_defs)
+        self._handlers = dict(handlers)
+
+    def call_tool(self, tool_name: str, args: dict) -> str:
+        """tools/call 模拟：分发到 handler。"""
+        handler = self._handlers.get(tool_name)
+        if handler is None:
+            return f"MCP error: unknown tool '{tool_name}'"
+        try:
+            return handler(**args)
+        except Exception as e:
+            return f"MCP error: {e}"
+
+
+def normalize_mcp_name(name: str) -> str:
+    """把非 [a-zA-Z0-9_-] 字符全替换为 '_'。"""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+
+
+MOCK_SERVERS = {
+    "docs": lambda: _make_mock_docs(),
+    "deploy": lambda: _make_mock_deploy(),
+}
+
+
+def _make_mock_docs() -> MCPClient:
+    client = MCPClient("docs")
+    client.register(
+        tool_defs=[
+            {
+                "name": "search",
+                "description": "Search documentation (readOnly)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "get_version",
+                "description": "Get docs version (readOnly)",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ],
+        handlers={
+            "search": lambda query: f"docs search result for: {query}",
+            "get_version": lambda: "docs v2.1.0",
+        },
+    )
+    return client
+
+
+def _make_mock_deploy() -> MCPClient:
+    client = MCPClient("deploy")
+    client.register(
+        tool_defs=[
+            {
+                "name": "trigger",
+                "description": "Trigger deployment (destructive)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"env": {"type": "string"}},
+                    "required": ["env"],
+                },
+            },
+            {
+                "name": "status",
+                "description": "Check deploy status (readOnly)",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ],
+        handlers={
+            "trigger": lambda env: f"deploy triggered for {env}",
+            "status": lambda: "deploy status: healthy",
+        },
+    )
+    return client
+
+
+def connect_mcp(name: str) -> str:
+    """连接 MCP server：已连接→提示；未知→提示可用列表；
+    否则 factory() 建 client 存进 mcp_clients。"""
+    if name in mcp_clients:
+        return f"already connected to '{name}'"
+    factory = MOCK_SERVERS.get(name)
+    if factory is None:
+        available = ", ".join(sorted(MOCK_SERVERS))
+        return f"Unknown server '{name}'. Available: {available}"
+    client = factory()
+    mcp_clients[name] = client
+    tool_names = [t["name"] for t in client.tools]
+    return f"Connected to '{name}'. Tools discovered: {', '.join(tool_names)}"
+
+
+def assemble_tool_pool() -> tuple:
+    """以内置 TOOLS/TOOL_HANDLERS 为基底，附加已连接 MCP server 的前缀工具。
+    用 normalize_mcp_name 防命名冲突/注入。
+    """
+    tools = list(TOOLS)
+    handlers = dict(TOOL_HANDLERS)
+    for server_name, client in mcp_clients.items():
+        safe_server = normalize_mcp_name(server_name)
+        for td in client.tools:
+            safe_tool = normalize_mcp_name(td["name"])
+            prefixed = f"mcp__{safe_server}__{safe_tool}"
+            tools.append(
+                {
+                    "name": prefixed,
+                    "description": td.get("description", ""),
+                    "input_schema": td.get("inputSchema", {}),
+                }
+            )
+            # 默认参数绑定避免闭包晚绑定
+            handlers[prefixed] = lambda *, c=client, t=td["name"], **kw: c.call_tool(
+                t, kw
+            )
+    return tools, handlers
+
+
+# ═══════════════════════════════════════════════════════════
 #  Background Tasks —— 后台异步执行慢操作
 # ═══════════════════════════════════════════════════════════
 
@@ -1382,6 +1517,15 @@ TOOLS = [
             "required": ["name", "description", "body"],
         },
     },
+    {
+        "name": "connect_mcp",
+        "description": "Connect to an MCP server to discover its tools.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Server name."}},
+            "required": ["name"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -1419,6 +1563,7 @@ TOOL_HANDLERS = {
         name, discard_changes
     ),
     "keep_worktree": lambda name, **_: keep_worktree(name),
+    "connect_mcp": lambda name, **_: connect_mcp(name),
 }
 
 
@@ -1588,6 +1733,8 @@ CONTEXT_LIMIT = 50_000  # s08: 超过这个体量才触发 L4（LLM 摘要）压
 def agent_loop(messages: list):
     global rounds_since_todo
     while True:
+        tools, handlers = assemble_tool_pool()
+
         if rounds_since_todo >= 3 and messages:
             messages.append(
                 {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
@@ -1628,7 +1775,7 @@ def agent_loop(messages: list):
                 model=MODEL,
                 system=system,
                 messages=messages,
-                tools=TOOLS,
+                tools=tools,
                 max_tokens=8000,
             )
         )
@@ -1656,7 +1803,7 @@ def agent_loop(messages: list):
                     }
                 )
                 continue
-            handler = TOOL_HANDLERS.get(block.name)
+            handler = handlers.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
             trigger_hooks("PostToolUse", block, output)
             if block.name == "todo_write":

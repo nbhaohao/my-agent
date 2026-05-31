@@ -45,14 +45,17 @@
 | Team Protocols | s16 | `test_s16_team_protocols.py` | 同文件集成块 3（request_shutdown 落盘 + 登记）= 27/27 | ✅ 已装进（单元+接线绿） |
 | 自主认领 | s17 | `test_s17_autonomous_agents.py` | 同文件集成块 5（自治循环 idle_poll 串 scan+claim）= 25/25 | ✅ 已装进（单元+接线绿） |
 | Worktree 隔离 | s18 | `test_s18_worktree_isolation.py` | 同文件集成块 2（create_worktree 事件落盘）= 36/36 | ✅ 已装进（单元+接线绿） |
-| MCP | s19 | 待加 | 待加 | ⬜ |
+| MCP | s19 | `test_s19_mcp_plugin.py` | 同文件集成块 3（连接后工具池重建）= 25/25 | ✅ 已装进（单元+接线绿） |
 | 综合收口 | s20 | 待加 | 待加 | ⬜ |
 
 > 📌 从 s10 起每章都要带集成块——只绿单元 = 函数写好但没接进主 loop，跑起来等于没生效（s08/s09 都验证过这个坑）。
 
 ## 当前位置
 
-🎯 下一步：s19「MCP Plugin」（待生成测试）。
+🎯 下一步：s20「综合收口」（最后一章）。
+
+✅ s19 已完成：MCP Plugin —— `test_s19_mcp_plugin.py` 25/25（22 单元 + 3 集成）。
+   MCPClient + mock server；normalize 防字符注入；mcp__ 前缀防命名冲突；assemble_tool_pool 动态组装；agent_loop 每轮重建工具池（去缓存）。
 
 ✅ s18 已完成：Worktree Isolation —— `test_s18_worktree_isolation.py` 36/36（34 单元 + 2 集成）。
    Task 加 worktree 字段；validate_worktree_name 防路径穿越；bind 不改状态保持 s17 自治认领；remove 安全闸防丢失未提交工作；events.jsonl 审计。s12 回归 22/22。
