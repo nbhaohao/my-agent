@@ -51,6 +51,7 @@ WORKDIR = Path.cwd()
 MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 TASKS_DIR = Path(".tasks")
 MAILBOX_DIR = Path(".mailbox")
+WORKTREES_DIR = Path(".worktrees")
 pending_requests: dict = {}  # request_id -> ProtocolState
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
@@ -671,6 +672,7 @@ class Task:
     status: str = "pending"
     owner: str = ""
     blockedBy: list = field(default_factory=list)
+    worktree: str = ""
 
 
 def _resolve_tasks_dir(tasks_dir=None) -> Path:
@@ -689,6 +691,7 @@ def save_task(task: Task, tasks_dir=None):
         "status": task.status,
         "owner": task.owner,
         "blockedBy": task.blockedBy,
+        "worktree": task.worktree,
     }
     (td / f"{task.id}.json").write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -706,6 +709,7 @@ def load_task(task_id: str, tasks_dir=None) -> Task:
         status=data.get("status", "pending"),
         owner=data.get("owner", ""),
         blockedBy=data.get("blockedBy", []),
+        worktree=data.get("worktree", ""),
     )
 
 
@@ -835,6 +839,125 @@ def idle_poll(
                 )
                 return "work"
     return "timeout"
+
+
+# ═══════════════════════════════════════════════════════════
+#  Worktree Isolation（s18）—— 任务↔目录绑定 + 生命周期审计
+# ═══════════════════════════════════════════════════════════
+
+_WT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def validate_worktree_name(name: str):
+    """合法名：仅 [A-Za-z0-9._-] 1-64 字符，且不是 '.' / '..'。
+    合法 → None，非法 → 错误信息。"""
+    if not name or name in (".", ".."):
+        return f"Invalid worktree name: '{name}'"
+    if len(name) > 64:
+        return f"Worktree name too long ({len(name)} > 64): '{name}'"
+    if not _WT_NAME_RE.match(name):
+        return f"Invalid characters in worktree name: '{name}'"
+    return None
+
+
+def run_git(args: list[str]) -> tuple:
+    """跑真 git 命令，返回 (ok: bool, output: str)。测试 monkeypatch 此函数 mock。"""
+    try:
+        r = subprocess.run(
+            ["git"] + args,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return (r.returncode == 0, (r.stdout + r.stderr).strip())
+    except Exception as e:
+        return (False, str(e))
+
+
+def log_event(event_type: str, worktree_name: str, task_id: str = ""):
+    """往 WORKTREES_DIR/events.jsonl append 一行 JSON 事件。"""
+    events_file = WORKTREES_DIR / "events.jsonl"
+    events_file.parent.mkdir(parents=True, exist_ok=True)
+    entry = json.dumps(
+        {
+            "type": event_type,
+            "worktree": worktree_name,
+            "task_id": task_id,
+        },
+        ensure_ascii=False,
+    )
+    with events_file.open("a", encoding="utf-8") as f:
+        f.write(entry + "\n")
+
+
+def create_worktree(name: str, task_id: str = "") -> str:
+    """创建 git worktree：校验名 → 检查目录存在 → run_git add → bind + log。"""
+    err = validate_worktree_name(name)
+    if err is not None:
+        return f"Error: {err}"
+    target = WORKTREES_DIR / name
+    if target.exists():
+        return f"Error: worktree '{name}' already exists"
+    ok, out = run_git(["worktree", "add", str(target)])
+    if not ok:
+        return f"Error: git worktree add failed: {out}"
+    if task_id:
+        bind_task_to_worktree(task_id, name)
+    log_event("create", name, task_id)
+    return f"Worktree '{name}' created at {target}"
+
+
+def bind_task_to_worktree(task_id: str, worktree_name: str, tasks_dir=None):
+    """只写 task.worktree 字段，不改 status（保持 pending 等队友认领）。"""
+    task = load_task(task_id, tasks_dir=tasks_dir)
+    task.worktree = worktree_name
+    save_task(task, tasks_dir=tasks_dir)
+
+
+def _count_worktree_changes(path) -> tuple:
+    """返回 (未提交文件数, 未推送提交数)。git 边界，测试 monkeypatch。"""
+    try:
+        ok1, status_out = run_git(["-C", str(path), "status", "--porcelain"])
+        uncommitted = (
+            len(status_out.strip().splitlines()) if ok1 and status_out.strip() else 0
+        )
+        ok2, log_out = run_git(["-C", str(path), "log", "@{push}..HEAD", "--oneline"])
+        unpushed = len(log_out.strip().splitlines()) if ok2 and log_out.strip() else 0
+        return (uncommitted, unpushed)
+    except Exception:
+        return (-1, -1)
+
+
+def remove_worktree(name: str, discard_changes: bool = False) -> str:
+    """移除 worktree：非法名→错误；不存在→'not found'；
+    有改动且未 discard→拒绝；否则 git remove + 删分支 + log。"""
+    err = validate_worktree_name(name)
+    if err is not None:
+        return f"Error: {err}"
+    target = WORKTREES_DIR / name
+    if not target.exists():
+        return f"Error: worktree '{name}' not found"
+    if not discard_changes:
+        uncommitted, unpushed = _count_worktree_changes(target)
+        if uncommitted > 0 or unpushed > 0:
+            return (
+                f"Error: worktree '{name}' has {uncommitted} uncommitted file(s) "
+                f"and {unpushed} unpushed commit(s). Use discard_changes=True to force."
+            )
+    ok, out = run_git(["worktree", "remove", str(target), "--force"])
+    if not ok:
+        return f"Error: git worktree remove failed: {out}"
+    # 删除对应分支
+    run_git(["branch", "-D", name])
+    log_event("remove", name)
+    return f"Worktree '{name}' removed."
+
+
+def keep_worktree(name: str) -> str:
+    """保留 worktree（分支留着等 review），记 keep 事件。"""
+    log_event("keep", name)
+    return f"Worktree '{name}' kept for review."
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1291,6 +1414,11 @@ TOOL_HANDLERS = {
         "\n".join(f"{t.id} {t.subject}" for t in scan_unclaimed_tasks())
         or "(看板上没有可认领的任务)"
     ),
+    "create_worktree": lambda name, task_id="", **_: create_worktree(name, task_id),
+    "remove_worktree": lambda name, discard_changes=False, **_: remove_worktree(
+        name, discard_changes
+    ),
+    "keep_worktree": lambda name, **_: keep_worktree(name),
 }
 
 

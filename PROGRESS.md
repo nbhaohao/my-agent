@@ -44,7 +44,7 @@
 | Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 同文件集成块 2（send_message 落盘）= 11/11 | ✅ 已装进（单元+接线绿） |
 | Team Protocols | s16 | `test_s16_team_protocols.py` | 同文件集成块 3（request_shutdown 落盘 + 登记）= 27/27 | ✅ 已装进（单元+接线绿） |
 | 自主认领 | s17 | `test_s17_autonomous_agents.py` | 同文件集成块 5（自治循环 idle_poll 串 scan+claim）= 25/25 | ✅ 已装进（单元+接线绿） |
-| Worktree 隔离 | s18 | 待加 | 待加 | ⬜ |
+| Worktree 隔离 | s18 | `test_s18_worktree_isolation.py` | 同文件集成块 2（create_worktree 事件落盘）= 36/36 | ✅ 已装进（单元+接线绿） |
 | MCP | s19 | 待加 | 待加 | ⬜ |
 | 综合收口 | s20 | 待加 | 待加 | ⬜ |
 
@@ -52,7 +52,10 @@
 
 ## 当前位置
 
-🎯 下一步：s18「Worktree Isolation」（待生成测试；开工前需定测纯逻辑 vs 引真 git 的取舍）。
+🎯 下一步：s19「MCP Plugin」（待生成测试）。
+
+✅ s18 已完成：Worktree Isolation —— `test_s18_worktree_isolation.py` 36/36（34 单元 + 2 集成）。
+   Task 加 worktree 字段；validate_worktree_name 防路径穿越；bind 不改状态保持 s17 自治认领；remove 安全闸防丢失未提交工作；events.jsonl 审计。s12 回归 22/22。
 
 ✅ s17 已完成：Autonomous Agents —— `test_s17_autonomous_agents.py` 25/25（20 单元 + 5 集成）。
    scan_unclaimed_tasks 三条件；claim_task 加 owner 检查（向后兼容 s12）；idle_poll 的 WORK→IDLE→SHUTDOWN，inbox 优先于看板。
