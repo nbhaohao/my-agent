@@ -27,6 +27,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -840,6 +841,74 @@ def collect_background_results() -> str:
         del background_tasks[bg_id]
 
     return "\n\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+#  Cron 表达式匹配
+# ═══════════════════════════════════════════════════════════
+
+
+def _cron_field_matches(field: str, value: int) -> bool:
+    """匹配单个 cron 字段。支持 * / */N / N-M / N,M,... / N。"""
+    field = field.strip()
+    if field == "*":
+        return True
+    # */N
+    if field.startswith("*/"):
+        try:
+            step = int(field[2:])
+            return step > 0 and value % step == 0
+        except ValueError:
+            return False
+    # N-M 范围
+    if "-" in field:
+        parts = field.split("-", 1)
+        try:
+            lo, hi = int(parts[0]), int(parts[1])
+            return lo <= value <= hi
+        except ValueError:
+            return False
+    # N,M,... 列表
+    if "," in field:
+        try:
+            return value in [int(x) for x in field.split(",")]
+        except ValueError:
+            return False
+    # N 单值
+    try:
+        return value == int(field)
+    except ValueError:
+        return False
+
+
+def cron_matches(cron_expr: str, dt: datetime) -> bool:
+    """cron 五段式（分 时 日 月 周）匹配给定 datetime。"""
+    fields = cron_expr.strip().split()
+    if len(fields) != 5:
+        return False
+
+    minute, hour, dom, month, dow = fields
+    # 周换算：cron 0=周日，Python weekday() 周一=0
+    dow_value = (dt.weekday() + 1) % 7
+
+    if not _cron_field_matches(minute, dt.minute):
+        return False
+    if not _cron_field_matches(hour, dt.hour):
+        return False
+    if not _cron_field_matches(month, dt.month):
+        return False
+
+    # DOM 和 DOW 的 OR 语义
+    dom_match = _cron_field_matches(dom, dt.day)
+    dow_match = _cron_field_matches(dow, dow_value)
+
+    dom_constrained = dom != "*"
+    dow_constrained = dow != "*"
+
+    if dom_constrained and dow_constrained:
+        return dom_match or dow_match
+    else:
+        return dom_match and dow_match
 
 
 # ═══════════════════════════════════════════════════════════

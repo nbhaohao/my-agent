@@ -24,6 +24,7 @@ s14 验收测试 —— Cron Scheduler（五段式 cron 表达式匹配）
 ══════════════════════════════════════════════════════════════
 """
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,78 @@ results = []
 def check(name, cond, detail=""):
     results.append(bool(cond))
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
+
+
+# ── 集成块用的假 client ──────────────────────────────────────
+class _Block:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _Resp:
+    def __init__(self):
+        self.stop_reason, self.content = "end_turn", [_Block("done")]
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        return _Resp()
+
+
+def integration_checks(agent):
+    """── 集成：cron_matches 是纯函数，验证 agent_loop 跑完后仍返回正确结果 ──
+    cron_matches 无副作用、不依赖 loop 状态；集成目标是确认 import 环境下
+    agent_loop 正常完成，且 cron_matches 没有被 loop 破坏。0 API。"""
+    needed = ("agent_loop", "get_client", "HOOKS", "cron_matches")
+    if not all(hasattr(agent, a) for a in needed):
+        check("集成：agent 具备所需符号", False,
+              f"缺: {[a for a in needed if not hasattr(agent, a)]}")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+    }
+    fake = FakeClient()
+    completed = {"ok": False}
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = tmp
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+
+            try:
+                agent.agent_loop([{"role": "user", "content": "hi"}])
+                completed["ok"] = True
+            except Exception as e:
+                completed["err"] = str(e)
+
+        check("集成：agent_loop 正常完成（cron 纯函数不影响 loop）",
+              completed["ok"], completed.get("err", ""))
+        # loop 跑完后 cron_matches 仍正确（无状态污染）
+        mon_9 = datetime(2026, 6, 1, 9, 0)
+        check("集成：loop 后 cron_matches 仍返回正确结果",
+              agent.cron_matches("0 9 * * *", mon_9) is True)
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.rounds_since_todo = saved["rounds"]
 
 
 def main():
@@ -74,6 +147,9 @@ def main():
     check("'0 0 1 * 1' 既非1号又非周一 → 不匹配", not cm("0 0 1 * 1", datetime(2026, 6, 3, 0, 0)))  # 6/3 周三、非1号
 
     check("段数不为 5 → False", not cm("0 9 * *", mon_9))
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 
