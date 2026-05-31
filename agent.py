@@ -23,6 +23,7 @@ import pathlib
 import random
 import re
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -50,6 +51,11 @@ MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
 TASKS_DIR = Path(".tasks")
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
+
+# 后台任务（s12）
+background_tasks: dict = {}  # bg_id -> {"status": "running"|"completed", "command": str}
+background_results: dict = {}  # bg_id -> 结果字符串
+_bg_counter: list = [0]  # 用列表包 int 避免 global 声明
 
 PROMPT_SECTIONS = {
     "identity": "You are a coding agent.",
@@ -760,6 +766,80 @@ def complete_task(task_id: str, tasks_dir=None) -> str:
     task.status = "completed"
     save_task(task, tasks_dir=td)
     return f"Task {task_id} completed."
+
+
+# ═══════════════════════════════════════════════════════════
+#  Background Tasks —— 后台异步执行慢操作
+# ═══════════════════════════════════════════════════════════
+
+_SLOW_KEYWORDS = {
+    "install",
+    "build",
+    "test",
+    "deploy",
+    "compile",
+    "pytest",
+    "make",
+    "npm",
+    "pip",
+    "yarn",
+    "cargo",
+    "gradle",
+}
+
+
+def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
+    """仅 bash + 命令含慢操作关键词时返回 True，大小写不敏感。"""
+    if tool_name != "bash":
+        return False
+    command = tool_input.get("command", "").lower()
+    return any(kw in command for kw in _SLOW_KEYWORDS)
+
+
+def should_run_background(tool_name: str, tool_input: dict) -> bool:
+    """模型显式指定 run_in_background → True；否则看 is_slow_operation。"""
+    if tool_input.get("run_in_background"):
+        return True
+    return is_slow_operation(tool_name, tool_input)
+
+
+def start_background_task(fn, command: str = "") -> str:
+    """启动 daemon 线程执行 fn，记录状态，立刻返回 bg_id。"""
+    _bg_counter[0] += 1
+    bg_id = f"bg_{_bg_counter[0]:04d}"
+    background_tasks[bg_id] = {"status": "running", "command": command}
+
+    def _runner():
+        try:
+            result = fn()
+            background_results[bg_id] = str(result)
+        except Exception as e:
+            background_results[bg_id] = f"Error: {e}"
+        background_tasks[bg_id]["status"] = "completed"
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    return bg_id
+
+
+def collect_background_results() -> str:
+    """收集已完成后台任务的输出，从列表移除已收集条目，避免重复通知。"""
+    completed_ids = [
+        bid
+        for bid, info in background_tasks.items()
+        if info.get("status") == "completed"
+    ]
+    if not completed_ids:
+        return ""
+
+    lines = []
+    for bg_id in completed_ids:
+        cmd = background_tasks[bg_id].get("command", "")
+        result = background_results.get(bg_id, "(no output)")
+        lines.append(f"[{bg_id}] {cmd}\n{result}")
+        del background_tasks[bg_id]
+
+    return "\n\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════

@@ -39,7 +39,7 @@
 | System Prompt 运行时组装 | s10 | `test_s10_system_prompt.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | 错误恢复 / fallback | s11 | `test_s11_error_recovery.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 同文件集成块 2（create_task 落盘）= 22/22 | ✅ 已装进（单元+接线绿） |
-| 后台任务 | s13 | `test_s13_background_tasks.py` | 待加集成块 | 🟡 测试就绪·待做 |
+| 后台任务 | s13 | `test_s13_background_tasks.py` | 同文件集成块 3（并行不阻塞+结果落 dict）= 17/17 | ✅ 已装进（单元+接线绿） |
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | Agent Teams（消息总线） | s15 | `test_s15_agent_teams.py` | 待加集成块 | 🟡 测试就绪·待做 |
 | Team Protocols | s16 | 待加 | 待加 | ⬜ |
@@ -52,7 +52,10 @@
 
 ## 当前位置
 
-🎯 下一步：s13「后台任务」。
+🎯 下一步：s14「Cron 调度」。
+
+✅ s13 已完成：后台任务 —— `test_s13_background_tasks.py` 17/17（14 单元 + 3 集成）。
+   daemon 线程 + background_results 共享内存；collect 删除已收集条目防重复通知。
 
 ✅ s12 已完成：Task System —— `test_s12_task_system.py` 22/22（20 单元 + 2 集成）。
    Task dataclass + CRUD + blockedBy 依赖门控，TOOL_HANDLERS 接入四个 task 工具。

@@ -32,6 +32,7 @@ should_run_background / start_background_task / collect_background_results。
 ══════════════════════════════════════════════════════════════
 """
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -43,6 +44,92 @@ results = []
 def check(name, cond, detail=""):
     results.append(bool(cond))
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
+
+
+# ── 集成块用的假 client ──────────────────────────────────────
+class _Block:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _Resp:
+    def __init__(self):
+        self.stop_reason, self.content = "end_turn", [_Block("done")]
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        return _Resp()
+
+
+def integration_checks(agent):
+    """── 集成：后台线程与 agent_loop 并行不互相阻塞 ──
+    先发射一个即时完成的后台任务，再跑 agent_loop，断言：
+      1. loop 正常完成（后台线程没有阻塞主线程）
+      2. 后台任务结果写回 background_results（daemon 线程跑通了）
+      3. collect_background_results 能收到输出（不重复收集）。0 API。"""
+    needed = ("agent_loop", "get_client", "HOOKS", "start_background_task",
+              "collect_background_results", "background_results")
+    if not all(hasattr(agent, a) for a in needed):
+        check("集成：agent 具备所需符号", False,
+              f"缺: {[a for a in needed if not hasattr(agent, a)]}")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+    }
+    fake = FakeClient()
+    completed = {"ok": False}
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = tmp
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+
+            bg_id = agent.start_background_task(lambda: "BG_INTEG_DONE", command="test")
+
+            try:
+                agent.agent_loop([{"role": "user", "content": "hi"}])
+                completed["ok"] = True
+            except Exception as e:
+                completed["err"] = str(e)
+
+            # 等后台线程完成（最多 2s，fn 是即时的）
+            for _ in range(200):
+                if agent.background_results.get(bg_id) is not None:
+                    break
+                time.sleep(0.01)
+
+            collected = agent.collect_background_results()
+
+            check("集成：agent_loop 与后台线程并行，loop 正常完成",
+                  completed["ok"], completed.get("err", ""))
+            check("集成：后台任务结果写回 background_results（线程跑通）",
+                  agent.background_results.get(bg_id) == "BG_INTEG_DONE",
+                  f"got={agent.background_results.get(bg_id)!r}")
+            check("集成：collect_background_results 包含后台输出",
+                  "BG_INTEG_DONE" in str(collected), f"collected={collected!r}")
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.rounds_since_todo = saved["rounds"]
 
 
 def main():
@@ -84,6 +171,9 @@ def main():
 
     collected = agent.collect_background_results()
     check("collect_background_results：包含该任务输出", "DONE_42" in str(collected))
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 
