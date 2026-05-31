@@ -17,12 +17,15 @@ my-agent — 我自己的 coding agent。
 运行起来后是一个终端 coding agent，输入问题回车，输入 q 退出。
 """
 
+import json
 import os
 import pathlib
 import random
 import re
 import subprocess
 import time
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -44,6 +47,7 @@ if os.getenv("ANTHROPIC_BASE_URL"):
 
 WORKDIR = Path.cwd()
 MEMORY_DIR = Path(__file__).resolve().parent / ".memory"
+TASKS_DIR = Path(".tasks")
 MODEL = os.getenv("MODEL_ID", "deepseek-v4-flash")  # getenv 带默认 → 导入不崩
 CURRENT_TODOS: list[dict] = []
 
@@ -646,6 +650,119 @@ def reactive_compact(messages: list, summarizer=None, keep_recent: int = 5) -> l
 
 
 # ═══════════════════════════════════════════════════════════
+#  Task System —— 持久任务管理
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class Task:
+    id: str
+    subject: str
+    description: str = ""
+    status: str = "pending"
+    owner: str = ""
+    blockedBy: list = field(default_factory=list)
+
+
+def _resolve_tasks_dir(tasks_dir=None) -> Path:
+    """解析 tasks_dir 参数，None 时用模块级 TASKS_DIR。"""
+    return Path(tasks_dir) if tasks_dir is not None else TASKS_DIR
+
+
+def save_task(task: Task, tasks_dir=None):
+    """把 Task 序列化为 JSON 存到 {tasks_dir}/{task.id}.json。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    td.mkdir(parents=True, exist_ok=True)
+    data = {
+        "id": task.id,
+        "subject": task.subject,
+        "description": task.description,
+        "status": task.status,
+        "owner": task.owner,
+        "blockedBy": task.blockedBy,
+    }
+    (td / f"{task.id}.json").write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_task(task_id: str, tasks_dir=None) -> Task:
+    """读 JSON 反序列化回 Task dataclass。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    data = json.loads((td / f"{task_id}.json").read_text(encoding="utf-8"))
+    return Task(
+        id=data["id"],
+        subject=data["subject"],
+        description=data.get("description", ""),
+        status=data.get("status", "pending"),
+        owner=data.get("owner", ""),
+        blockedBy=data.get("blockedBy", []),
+    )
+
+
+def list_tasks(tasks_dir=None) -> list[Task]:
+    """读目录下所有 *.json，返回 Task 列表。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    if not td.is_dir():
+        return []
+    tasks = []
+    for f in sorted(td.glob("*.json")):
+        tasks.append(load_task(f.stem, tasks_dir=td))
+    return tasks
+
+
+def create_task(
+    subject: str, description: str = "", blockedBy=None, tasks_dir=None
+) -> Task:
+    """生成唯一 id，创建 Task，自动 save_task 落盘。"""
+    task = Task(
+        id=uuid.uuid4().hex[:12],
+        subject=subject,
+        description=description,
+        status="pending",
+        owner="",
+        blockedBy=blockedBy or [],
+    )
+    save_task(task, tasks_dir=tasks_dir)
+    return task
+
+
+def can_start(task_id: str, tasks_dir=None) -> bool:
+    """检查 task 的 blockedBy 依赖是否全部 completed。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    task = load_task(task_id, tasks_dir=td)
+    for dep_id in task.blockedBy:
+        dep_path = td / f"{dep_id}.json"
+        if not dep_path.is_file():
+            return False
+        dep = load_task(dep_id, tasks_dir=td)
+        if dep.status != "completed":
+            return False
+    return True
+
+
+def claim_task(task_id: str, owner: str = "agent", tasks_dir=None) -> str:
+    """can_start → False 返回 blocked 提示；True → 设 in_progress + save。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    if not can_start(task_id, tasks_dir=td):
+        return f"Task {task_id} is blocked by unfinished dependencies."
+    task = load_task(task_id, tasks_dir=td)
+    task.status = "in_progress"
+    task.owner = owner
+    save_task(task, tasks_dir=td)
+    return f"Task {task_id} claimed by {owner}."
+
+
+def complete_task(task_id: str, tasks_dir=None) -> str:
+    """读任务，设 status=completed，save，返回提示。"""
+    td = _resolve_tasks_dir(tasks_dir)
+    task = load_task(task_id, tasks_dir=td)
+    task.status = "completed"
+    save_task(task, tasks_dir=td)
+    return f"Task {task_id} completed."
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具注册表（s02 dispatch map）
 #  ⬇️ s07 起，新机制的工具往这里加
 # ═══════════════════════════════════════════════════════════
@@ -798,6 +915,14 @@ TOOL_HANDLERS = {
     "task": spawn_subagent,
     "compact": run_compact,
     "remember": run_remember,
+    "create_task": lambda subject, description="", blockedBy=None, **_: str(
+        create_task(subject, description, blockedBy or [])
+    ),
+    "list_tasks": lambda **_: "\n".join(
+        f"{t.id} [{t.status}] {t.subject}" for t in list_tasks()
+    ),
+    "claim_task": lambda task_id, owner="agent", **_: claim_task(task_id, owner),
+    "complete_task": lambda task_id, **_: complete_task(task_id),
 }
 
 

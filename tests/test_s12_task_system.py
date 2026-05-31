@@ -44,6 +44,93 @@ PASS, FAIL = "\033[32m✅\033[0m", "\033[31m❌\033[0m"
 results = []
 
 
+# ── 集成块用的假 client ──────────────────────────────────────
+class _TextBlock:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _ToolUseBlock:
+    def __init__(self, name, input_data):
+        self.type = "tool_use"
+        self.id = "toolu_s12_01"
+        self.name = name
+        self.input = input_data
+
+
+class _Resp:
+    def __init__(self, stop_reason, content):
+        self.stop_reason, self.content = stop_reason, content
+
+
+class FakeClient:
+    """第一次 create 返回 create_task 工具调用，第二次返回 end_turn。
+    验证 agent_loop 的 create_task handler 真的被接通（任务文件落盘）。"""
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return _Resp("tool_use", [_ToolUseBlock("create_task", {"subject": "集成测试任务"})])
+        return _Resp("end_turn", [_TextBlock("done")])
+
+
+def integration_checks(agent):
+    """── 集成：agent_loop 收到 create_task 工具调用时真的落盘了任务文件 ──
+    FakeClient 第一轮返回 create_task tool_use，断言：
+      1. loop 正常完成（handler 已接进 TOOL_HANDLERS）
+      2. TASKS_DIR 里出现了 .json 文件（任务持久化生效）。0 API。"""
+    needed = ("agent_loop", "get_client", "HOOKS", "TASKS_DIR", "create_task")
+    if not all(hasattr(agent, a) for a in needed):
+        check("集成：agent 具备所需符号", False,
+              f"缺: {[a for a in needed if not hasattr(agent, a)]}")
+        return
+
+    saved = {
+        "hooks": {k: list(v) for k, v in agent.HOOKS.items()},
+        "get_client": agent.get_client,
+        "mem_dir": agent.MEMORY_DIR,
+        "tasks_dir": agent.TASKS_DIR,
+        "rounds": getattr(agent, "rounds_since_todo", 0),
+    }
+    fake = FakeClient()
+    completed = {"ok": False}
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for k in agent.HOOKS:
+                agent.HOOKS[k] = []
+            agent.MEMORY_DIR = tmp
+            agent.TASKS_DIR = tmp
+            agent.get_client = lambda: fake
+            agent.rounds_since_todo = 0
+
+            try:
+                agent.agent_loop([{"role": "user", "content": "创建一个任务"}])
+                completed["ok"] = True
+            except Exception as e:
+                completed["err"] = str(e)
+
+            task_files = list(tmp.glob("*.json"))
+            check("集成：agent_loop 收到 create_task 调用后正常完成", completed["ok"],
+                  completed.get("err", "loop 抛出了异常"))
+            check("集成：TASKS_DIR 里出现了任务 .json 文件（持久化接通）",
+                  len(task_files) >= 1, f"json 文件数={len(task_files)}")
+    finally:
+        for k, v in saved["hooks"].items():
+            agent.HOOKS[k] = v
+        agent.get_client = saved["get_client"]
+        agent.MEMORY_DIR = saved["mem_dir"]
+        agent.TASKS_DIR = saved["tasks_dir"]
+        agent.rounds_since_todo = saved["rounds"]
+
+
 def check(name, cond, detail=""):
     results.append(bool(cond))
     print((PASS if cond else FAIL) + f" {name}" + (f"  — {detail}" if detail and not cond else ""))
@@ -96,6 +183,9 @@ def main():
         # 缺失依赖视为 blocked
         c = agent.create_task("引用了不存在的依赖", blockedBy=["task_does_not_exist"], tasks_dir=tmp)
         check("can_start：缺失依赖视为 blocked", agent.can_start(c.id, tasks_dir=tmp) is False)
+
+    # ── 集成：agent_loop 接线（用假 client，0 API）─────────────
+    integration_checks(agent)
 
     summarize()
 
