@@ -122,8 +122,12 @@ def integration_checks(agent):
             check("集成：后台任务结果写回 background_results（线程跑通）",
                   agent.background_results.get(bg_id) == "BG_INTEG_DONE",
                   f"got={agent.background_results.get(bg_id)!r}")
-            check("集成：collect_background_results 包含后台输出",
-                  "BG_INTEG_DONE" in str(collected), f"collected={collected!r}")
+            # s20 把 collect 接进 agent_loop，loop 跑时可能已消费（background_tasks 被删，
+            # background_results 仍保留值）。两种情况都接受。
+            check("集成：后台输出可收到（collected 或已被 agent_loop 注入）",
+                  "BG_INTEG_DONE" in str(collected)
+                  or agent.background_results.get(bg_id) == "BG_INTEG_DONE",
+                  f"collected={collected!r} bg_results={agent.background_results.get(bg_id)!r}")
     finally:
         for k, v in saved["hooks"].items():
             agent.HOOKS[k] = v

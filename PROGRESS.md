@@ -46,13 +46,17 @@
 | 自主认领 | s17 | `test_s17_autonomous_agents.py` | 同文件集成块 5（自治循环 idle_poll 串 scan+claim）= 25/25 | ✅ 已装进（单元+接线绿） |
 | Worktree 隔离 | s18 | `test_s18_worktree_isolation.py` | 同文件集成块 2（create_worktree 事件落盘）= 36/36 | ✅ 已装进（单元+接线绿） |
 | MCP | s19 | `test_s19_mcp_plugin.py` | 同文件集成块 3（连接后工具池重建）= 25/25 | ✅ 已装进（单元+接线绿） |
-| 综合收口 | s20 | 待加 | 待加 | ⬜ |
+| 综合收口 | s20 | `test_s20_comprehensive.py` | 同文件三组接线测试 = 7/7 | ✅ 已装进（全部机制共用一个 loop） |
 
 > 📌 从 s10 起每章都要带集成块——只绿单元 = 函数写好但没接进主 loop，跑起来等于没生效（s08/s09 都验证过这个坑）。
 
 ## 当前位置
 
-🎯 下一步：s20「综合收口」（最后一章）。
+🏆 全课完成！s01–s20 全部绿，14 个测试文件全部通过。
+
+✅ s20 已完成：综合收口 —— `test_s20_comprehensive.py` 7/7。
+   补齐三处缺口：后台派发占位+通知注入+prompt 过长 reactive_compact 恢复。
+   全回归 14/14 绿。机制很多，循环一个。
 
 ✅ s19 已完成：MCP Plugin —— `test_s19_mcp_plugin.py` 25/25（22 单元 + 3 集成）。
    MCPClient + mock server；normalize 防字符注入；mcp__ 前缀防命名冲突；assemble_tool_pool 动态组装；agent_loop 每轮重建工具池（去缓存）。

@@ -1770,15 +1770,41 @@ def agent_loop(messages: list):
 
         system = assemble_system_prompt(context)
 
-        response = with_retry(
-            lambda: get_client().messages.create(
-                model=MODEL,
-                system=system,
-                messages=messages,
-                tools=tools,
-                max_tokens=8000,
+        # s20: 后台任务结果通知注入
+        notif = collect_background_results()
+        if notif:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"<task_notification>\n{notif}\n</task_notification>",
+                }
             )
-        )
+
+        # s20: prompt 过长时 reactive 压缩兜底
+        try:
+            response = with_retry(
+                lambda: get_client().messages.create(
+                    model=MODEL,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=8000,
+                )
+            )
+        except Exception as e:
+            if is_prompt_too_long_error(e):
+                messages[:] = reactive_compact(messages)
+                response = with_retry(
+                    lambda: get_client().messages.create(
+                        model=MODEL,
+                        system=system,
+                        messages=messages,
+                        tools=tools,
+                        max_tokens=8000,
+                    )
+                )
+            else:
+                raise
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
@@ -1804,7 +1830,14 @@ def agent_loop(messages: list):
                 )
                 continue
             handler = handlers.get(block.name)
-            output = handler(**block.input) if handler else f"Unknown: {block.name}"
+            if handler and should_run_background(block.name, block.input):
+                bg_id = start_background_task(
+                    lambda h=handler, inp=dict(block.input): h(**inp),
+                    command=block.input.get("command", ""),
+                )
+                output = f"[Background task {bg_id} started] 结果稍后通过通知返回。"
+            else:
+                output = handler(**block.input) if handler else f"Unknown: {block.name}"
             trigger_hooks("PostToolUse", block, output)
             if block.name == "todo_write":
                 rounds_since_todo = 0
