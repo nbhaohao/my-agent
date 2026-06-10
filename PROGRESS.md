@@ -33,11 +33,11 @@
 | 机制 | 来源 | 单元块 | 接线（同文件集成块） | 状态 |
 |---|---|---|---|---|
 | agent loop + 多工具 + 权限 + hooks + todo + subagent | s01-s06 | （已学透，固化为起点） | —（本就是 loop 本体） | ✅ 起点 |
-| Skill 两层加载 | s07 | `test_s07_skills.py`（11/11） | 目录随 `build_system` 进 system（随 s09 接线一并接通） | 🟡 单元绿·接线随 build_system |
+| Skill 两层加载 | s07 | `test_s07_skills.py`（11/11） | 目录随 `build_system` 进 system（s09 接线时已接通） | ✅ 已装进（接线随 build_system） |
 | 上下文压缩（四层管线） | s08 | `test_s08_compact.py`（19/19） | **代码已接**：`agent_loop` 调 budget/snip/micro + 超阈值 L4；集成测试免（用户通过） | ✅ 已装进（接线已补·免集成测试） |
 | Memory（文件仓库+索引+按需） | s09 | `test_s09_memory.py` 单元 23 | 同文件集成块 3（build_system 进 system + body 注入）= 26/26 | ✅ 已装进（单元+接线绿） |
-| System Prompt 运行时组装 | s10 | `test_s10_system_prompt.py` | 待加集成块 | 🟡 测试就绪·待做 |
-| 错误恢复 / fallback | s11 | `test_s11_error_recovery.py` | 待加集成块 | 🟡 测试就绪·待做 |
+| System Prompt 运行时组装 | s10 | `test_s10_system_prompt.py` | 同文件集成块（system 含 identity 段）= 12/12 | ✅ 已装进（单元+接线绿） |
+| 错误恢复 / fallback | s11 | `test_s11_error_recovery.py` | 同文件集成块（429 重试：client 被调 ≥2 次）= 21/21 | ✅ 已装进（单元+接线绿） |
 | 任务系统（依赖图 + 持久化） | s12 | `test_s12_task_system.py` | 同文件集成块 2（create_task 落盘）= 22/22 | ✅ 已装进（单元+接线绿） |
 | 后台任务 | s13 | `test_s13_background_tasks.py` | 同文件集成块 3（并行不阻塞+结果落 dict）= 17/17 | ✅ 已装进（单元+接线绿） |
 | Cron 调度 | s14 | `test_s14_cron_scheduler.py` | 同文件集成块 2（纯函数无副作用验证）= 15/15 | ✅ 已装进（单元+接线绿） |
